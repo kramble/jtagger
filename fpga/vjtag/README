@@ -1,0 +1,455 @@
+This file /home/mark/misc/FPGA/quartus/mj_vjtag/README
+------------------------------------------------------
+A DE0-Nano Quartus project to investigate Virtual Jtag using a Terasic kit from circa 2012, with
+the included Quartus 10.1 for Windows (originally installed on Vista, run here on linux via wine).
+
+Based on https://tomverbeure.github.io/jtag/2018/05/04/JTAG-for-FPGAs-1-JTAG-GPIO.html
+Uses files from https://github.com/tomverbeure/jtag_gpios ... jtag_gpios-master.zip
+See ORIGINAL_README.md for the README.md from that original github project.
+
+See also...
+https://tomverbeure.github.io/2021/10/30/Intel-JTAG-Primitive.html
+https://tomverbeure.github.io/2021/05/02/Intel-JTAG-UART.html
+https://tomverbeure.github.io/2021/07/18/VexRiscv-OpenOCD-and-Traps.html
+Altera/Intel ug_virtualjtag.pdf (google, actual doc will be something like ug_virtualjtag-683705-666577.pdf)
+
+**** NOTE for jtagger ****
+
+This is the test bitstream. On loading it flashes one LED. Running jtagger will cause the LEDs to
+count (the top bits represent the VIR, the bottom the VDR).
+
+Format conversion...
+quartus_cpf.exe -c -q 12.0MHz -g 3.3 -n p system.sof system.svf
+quartus_cpf.exe -c --option=bitstream_compression=off system.sof system.rbf
+
+Testing, build jtagger in ../../src
+
+Loading the bitstream (takes 2 seconds, yes TWO), press y (ENTER) when prompted
+../../src/jtagger -r system.rbf
+
+Running test
+../../src/jtagger
+
+Alternatively you can copy jtagger here or to your PATH's localbin directory.
+
+------------------------------------------ Earlier Ramblings --------------------------------------
+
+Using Toshiba Windows Vista Quartus (C:/ drive) mounted read-only on linuxmint, run...
+$ wine /media/mark/Vista/altera/10.1/quartus/bin/quartus.exe
+
+INFO (TODO)...
+Program DE0-Nano using openFPGALoader (see other ../README_MJ for build info) ...
+$ wine /media/mark/Vista/altera/10.1/quartus/bin/quartus_cpf.exe -c -q 24.0MHz -g 3.3 -n p system.sof system.svf
+$ ./openFPGALoader -b de0nano system.svf
+--------------------------------------------------------------
+Start by copying files from /home/mark/misc/DiskC4linuxmint/(PARTOF)Elliptic/amber-master/syn
+ie the final (April 2021) version from Toshiba Windows Vista C:\ drive
+Files system.qpf, system.sof, system.sdc, ../sim/system.v, main_pll.v
+
+Pin assignments can stay as-is but strip out unnecessary code from system.v
+Add in code from jtag_gpios-master/top.v plus the necessary module files.
+
+Quartus ran OK but got error in timing analysis...
+Info: Command: quartus_sta system -c system
+Error: Tcl error: couldn't read file "z:/media/mark/vista/altera/10.1/quartus/common/tcl/internal/qsta_design_analysis.tcl": no such file or directory
+    while executing
+"source [file join $quartus(tclpath) internal qsta_design_analysis.tcl]"
+    (file "z:/media/mark/vista/altera/10.1/quartus/common/tcl/internal/qsta.tcl" line 23)
+
+WEIRD, file is present. Perhaps it's a wine quirk, or maybe path length (though it's well short of MAX_PATH)?
+... yes, shorter mount point fixed it, see ~/bin/winetmpquartus
+
+Convert to .svf and program...
+$ ./openFPGALoader -b de0nano system.svf
+Error: no device found
+
+$ ./openFPGALoader --scan-usb
+found 8 USB device
+Bus device vid:pid       probe type      manufacturer serial               product
+
+$ ./openFPGALoader -b de0nano system.svf
+USB-BlasterI has a 24MHz fixed frequency
+end of SVF file
+
+WEIRD! Anyway it did load OK (led 3 is flashing at about 1Hz).
+
+Try openocd, copied basic scripts to location of executable (./src), edited jtag_gpio.cfg to change {0} to {1}
+... Error: Can't find interface/altera-usb-blaster.cfg
+
+Moved the openocd executable and scripts up a level and edited path to tcl/interface/altera-usb-blaster.cfg
+... OK runs now
+$ ./openocd -f jtag_gpio.cfg 
+Open On-Chip Debugger 0.12.0+dev-snapshot (2023-01-26-20:22)
+Info : only one transport option; autoselecting 'jtag'
+Info : Listening on port 6666 for tcl connections
+Info : Listening on port 4444 for telnet connections
+Info : usb blaster interface using libftdi
+Info : Note: The adapter "usb_blaster" doesn't support configurable speed
+Info : JTAG tap: chip.gpios_tap tap/device found: 0x020f30dd (mfg: 0x06e (Altera), part: 0x20f3, ver: 0x0)
+Warn : JTAG tap: chip.gpios_tap       UNEXPECTED: 0x020f30dd (mfg: 0x06e (Altera), part: 0x20f3, ver: 0x0)
+Error: JTAG tap: chip.gpios_tap  expected 1 of 1: 0x149511c3 (mfg: 0x0e1 (Wintec Industries), part: 0x4951, ver: 0x1)
+Error: Trying to use configured scan chain anyway...
+Error: IR capture error at bit 4, saw 0x15 not 0x...3
+Warn : Bypassing JTAG setup events due to errors
+Warn : gdb services need one or more targets defined
+
+So looks like I need to change the final line in jtag_gpio.cfg to use 0x020f30dd.
+Ctrl-C and rerun...
+
+$ ./openocd -f jtag_gpio.cfg 
+Open On-Chip Debugger 0.12.0+dev-snapshot (2023-01-26-20:22)
+Licensed under GNU GPL v2
+For bug reports, read
+	http://openocd.org/doc/doxygen/bugs.html
+Info : only one transport option; autoselecting 'jtag'
+Info : Listening on port 6666 for tcl connections
+Info : Listening on port 4444 for telnet connections
+Info : usb blaster interface using libftdi
+Info : Note: The adapter "usb_blaster" doesn't support configurable speed
+Info : JTAG tap: chip.gpios_tap tap/device found: 0x020f30dd (mfg: 0x06e (Altera), part: 0x20f3, ver: 0x0)
+Error: IR capture error at bit 4, saw 0x15 not 0x...3
+Warn : Bypassing JTAG setup events due to errors
+Warn : gdb services need one or more targets defined
+
+In another shell prompt...
+$ telnet localhost 4444
+Trying 127.0.0.1...
+Connected to localhost.
+Escape character is '^]'.
+Open On-Chip Debugger
+> 
+
+... paste commands from commands.txt
+
+> runtest 5
+> help
+> script commands.txt
+embedded:startup.tcl:28: Error: Can't find commands.txt
+in procedure 'script' 
+at file "embedded:startup.tcl", line 28
+> script commands.tcl (OOPS I said .txt above)
+... didn't do anything!
+Try manually
+> drscan chip.gpios_tap 4 0xf
+0e
+> drscan chip.gpios_tap 4 0  
+00
+So it prints output now (but NOT when run from script!)
+Start again from top...
+> runtest 5
+> irscan chip.gpios_tap 0x2 -endstate IRPAUSE
+> drscan chip.gpios_tap 1 0x0
+00
+> irscan chip.gpios_tap 0x3 -endstate IRPAUSE
+> drscan chip.gpios_tap 4 0xf
+0e
+> irscan chip.gpios_tap 0x2 -endstate IRPAUSE
+> drscan chip.gpios_tap 1 0x0
+00
+> irscan chip.gpios_tap 0x3 -endstate IRPAUSE
+> drscan chip.gpios_tap 4 0xf
+0e
+> drscan chip.gpios_tap 4 0x9
+02
+> drscan chip.gpios_tap 4 0x0
+00
+
+LEDs are not responding (other than the flashing one)
+Responses are consistent though (repeating the last few)
+From help..
+> scan_chain
+   TapName             Enabled  IdCode     Expected   IrLen IrCap IrMask
+-- ------------------- -------- ---------- ---------- ----- ----- ------
+ 0 chip.gpios_tap         Y     0x020f30dd 0x020f30dd     4 0x05  0x0f
+
+> targets
+    TargetName         Type       Endian TapName            State       
+--  ------------------ ---------- ------ ------------------ ------------
+
+> swo names
+
+> jtag names
+chip.gpios_tap
+
+> drscan chip.gpios_tap 4 0xf
+0e
+> drscan chip.gpios_tap 4 0x1 
+02
+> drscan chip.gpios_tap 4 0x2
+04
+> drscan chip.gpios_tap 4 0x3
+06
+> drscan chip.gpios_tap 4 0x4
+08
+> drscan chip.gpios_tap 4 0x5
+0a
+> drscan chip.gpios_tap 4 0x6
+0c
+> drscan chip.gpios_tap 4 0x7
+
+0e
+> drscan chip.gpios_tap 4 0x8
+00
+
+That's unexpected, so lower 3 bits are effective.
+
+Perhaps try redoing the dodgy case statements that warned above?
+
+Or maybe this (see up top)...
+Error: IR capture error at bit 4, saw 0x15 not 0x...3
+Warn : Bypassing JTAG setup events due to errors
+
+reset_config trst_and_srst
+jtag_rclk 8
+
+nfo : Listening on port 6666 for tcl connections
+Info : Listening on port 4444 for telnet connections
+Info : usb blaster interface using libftdi
+Info : Note: The adapter "usb_blaster" doesn't support configurable speed
+Warn : There are no enabled taps.  AUTO PROBING MIGHT NOT WORK!!
+Info : JTAG tap: auto0.tap tap/device found: 0x020f30dd (mfg: 0x06e (Altera), part: 0x20f3, ver: 0x0)
+Warn : AUTO auto0.tap - use "jtag newtap auto0 tap -irlen 2 -expected-id 0x020f30dd"
+Error: IR capture error at bit 2, saw 0x3ffffffffffffd55 not 0x...3
+Warn : Bypassing JTAG setup events due to errors
+Warn : gdb services need one or more targets defined
+
+AHA, I suspect the irlen is wrong as the altera virtualjtag pdf mentions 10 bits, also see tcl/fpga/altera-ep3c10.cfg
+# Altera Cyclone III EP3C10
+# see Cyclone III Device Handbook, Volume 1;
+# Table 14–5. 32-Bit Cyclone III Device IDCODE
+jtag newtap ep3c10 tap -expected-id 0x020f10dd -irlen 10
+... a diffrent chip, but expect cyclone IV to behave the same.
+
+I suspect that Tom's jtag_gpios project did not work with the altera sld_virtual_jtag megafunction, which is why
+it was if "{ 0 }" in jtag_gpio.cfg ... he actually tested with the JTAG_TAP_GENERIC module using general fpga I/O
+for the jtag signals, hence the 4 bit irlen.
+
+Looking in the other projects I found this...
+/home/mark/misc/FPGA/tomverbeure/vj-uart-master/doc/low_level.urjtag
+... Looks like a script for URJTAG (todo investigate, have zip in FPGA/zips). Seems to use 10 bit IR with
+the USER0 and USER1 (0xe and 0xd) instructions (as in the altera virtualjtag pdf)...
+instruction VIR 0000001110 VIR
+instruction VDR 0000001100 VDR
+
+From pdf (page 12)...
+The SLD hub uses the USER1 command to select the VIR data path and the USER0 command to select the VDR data path
+from page 20...
+VIR shifts consist of a USER1 (0x0E) IR shift followed by a DR shift to the virtual Instruction Register.
+The VIR value field in the figure below is four bits long, even though the VIR length is
+configured to be three bits long, and shows the bit values and fields associated with
+the VIR/VDR scans. The Instruction Register length for all Intel FPGAs and CPLDs is
+10-bits long. The USER1 value is 0x0E and USER0 value is 0x0C for all Intel FPGAs
+and CPLDs. The Address bits contained in the DR scan shift of a VIR scan are
+determined by the Intel Quartus Prime software.
+All USER1 DR chains must be of uniform length. The length of the VIR value field
+length is determined by length of the longest VIR register for all SLD nodes
+instantiated in the design. Because the SLD hub VIR is four bits long, the minimum
+length for the VIR value field for all SLD nodes in the design is at least four bits in
+length.
+
+NB the diagram shows a 10 bit IR scan (user0) 0000001110 followed by a 5 bit DR scan 10001 which is 1 bit addr
+and 4 bit VIR. Then a 10 bit IR scan (user1) 0000001100 followed by an 8 bit DR scan 000001000
+
+Since we have only one DR in the gpio example, the 5 bit user0 DR scan above may actually be 4 bits since no address.
+The 8 bit user1 DR will be 4 bits since that's the DR length for gpio. See page 33, also p34 for retrieving hub info.
+
+The parameters (pdf page 20) are in system.map.rpt
+; Parameter Settings for Inferred Entity Instance: sld_hub:auto_hub             ;
++--------------------------+----------------------------------+-----------------+
+; Parameter Name           ; Value                            ; Type            ;
++--------------------------+----------------------------------+-----------------+
+; sld_hub_ip_version       ; 1                                ; Untyped         ;
+; sld_hub_ip_minor_version ; 4                                ; Untyped         ;
+; sld_common_ip_version    ; 0                                ; Untyped         ;
+; device_family            ; Cyclone IV E                     ; Untyped         ;
+; n_nodes                  ; 1                                ; Untyped         ;
+; n_sel_bits               ; 1                                ; Untyped         ;
+; n_node_ir_bits           ; 4                                ; Untyped         ;
+; node_info                ; 00000000010000000110111000000000 ; Unsigned Binary ;
+; compilation_mode         ; 1                                ; Untyped         ;
+; BROADCAST_FEATURE        ; 1                                ; Signed Integer  ;
+; FORCE_IR_CAPTURE_FEATURE ; 1                                ; Signed Integer  ;
++--------------------------+----------------------------------+-----------------+
+
+So try this...
+Change the jtag_gpio.cfg to use
+jtag newtap gpios_tap tap -irlen 10 -expected-id 0x020f30dd
+
+$ ./openocd --debug -f jtag_gpio.cfg
+<snip>
+Debug: 44 678 core.c:328 jtag_call_event_callbacks(): jtag event: TAP reset
+Info : 45 703 core.c:1133 jtag_examine_chain_display(): JTAG tap: gpios_tap.tap tap/device found: 0x020f30dd (mfg: 0x06e (Altera), part: 0x20f3, ver: 0x0)
+Debug: 46 703 core.c:1364 jtag_validate_ircapture(): IR capture validation scan
+Debug: 47 721 core.c:1421 jtag_validate_ircapture(): gpios_tap.tap: IR capture 0x155
+<snip>
+... Looks good.
+
+$ telnet localhost 4444
+runtest 5
+
+# Select SCAN_N IR
+# ... select VIR (10 bit user0 instr) ...
+irscan chip.gpios_tap 0xe -endstate IRPAUSE
+# ... send VIR data (was irscan in original command.tcl)
+drscan chip.gpios_tap 4 0x2
+
+# Select CONFIG register
+irscan chip.gpios_tap 0xc -endstate IRPAUSE
+# drscan chip.gpios_tap 1 0x0    ... may need 4 bits here since all dr's are same length vis 4 0x1
+drscan chip.gpios_tap 4 0x0 
+
+# Select EXTEST IR
+irscan chip.gpios_tap 0xe -endstate IRPAUSE
+drscan chip.gpios_tap 4 0x3
+
+# Set all GPIOs to output
+irscan chip.gpios_tap 0xc -endstate IRPAUSE
+drscan chip.gpios_tap 4 0xf
+
+# Select SCAN_N IR
+irscan chip.gpios_tap 0xe -endstate IRPAUSE
+drscan chip.gpios_tap 4 0x2
+
+# Select DATA register
+irscan chip.gpios_tap 0xc -endstate IRPAUSE
+# drscan chip.gpios_tap 1 0x1    ... may need 4 bits here since all dr's are same length vis 4 0x1
+drscan chip.gpios_tap 4 0x1
+
+# Select EXTEST IR
+irscan chip.gpios_tap 0xe -endstate IRPAUSE
+drscan chip.gpios_tap 4 0x3
+
+# Set all GPIOs to high
+irscan chip.gpios_tap 0xc -endstate IRPAUSE
+drscan chip.gpios_tap 4 0xf
+
+This is how it actually went...
+> runtest 5
+> irscan chip.gpios_tap 0xd -endstate IRPAUSE
+Invalid command argument
+Tap: chip.gpios_tap unknown
+> scan_chain
+   TapName             Enabled  IdCode     Expected   IrLen IrCap IrMask
+-- ------------------- -------- ---------- ---------- ----- ----- ------
+ 0 gpios_tap.tap          Y     0x020f30dd 0x020f30dd    10 0x01  0x03
+
+> irscan gpios_tap.tap 0xd -endstate IRPAUSE 
+... so my tap name is WRONG (OOPS aha I had changed it in jtag_gpio.cfg)
+Change it to "chip gpios_tap" and restart (without --debug as it's annoying)
+
+> runtest 5
+> irscan chip.gpios_tap 0xd -endstate IRPAUSE
+> drscan chip.gpios_tap 4 0x2
+05
+> 
+
+Hmmm, de0_nao has gone into config mode (dim LEDs)! Try reloading the system.svf OK
+Repeat and it did it again.
+
+runtest 5
+irscan chip.gpios_tap 0xd -endstate IRPAUSE
+drscan chip.gpios_tap 5 0x2
+
+AHA I've beein using irscan 0xd ... should be 0xe !!! (0xd is some other command which causes a fpga reset)
+
+> runtest 5
+> irscan chip.gpios_tap 0xe -endstate IRPAUSE
+> drscan chip.gpios_tap 4 0x2                
+00
+> irscan chip.gpios_tap 0xc -endstate IRPAUSE
+> drscan chip.gpios_tap 4 0x0                
+00
+> irscan chip.gpios_tap 0xe -endstate IRPAUSE
+> drscan chip.gpios_tap 4 0x3                
+04
+> irscan chip.gpios_tap 0xc -endstate IRPAUSE
+> drscan chip.gpios_tap 4 0xf                
+0e
+> irscan chip.gpios_tap 0xe -endstate IRPAUSE
+> drscan chip.gpios_tap 4 0x2                
+06
+> irscan chip.gpios_tap 0xc -endstate IRPAUSE
+> drscan chip.gpios_tap 4 0x1                
+02
+> irscan chip.gpios_tap 0xe -endstate IRPAUSE
+> drscan chip.gpios_tap 4 0x3                
+04
+> irscan chip.gpios_tap 0xc -endstate IRPAUSE
+> drscan chip.gpios_tap 4 0xf                
+0e
+> drscan chip.gpios_tap 4 0x9                
+03
+> drscan chip.gpios_tap 4 0xa
+05
+> 
+
+So no reset, but leds do not change either! Perhaps I need to simplify the verilog, remove the multiple VIR's
+and have just one VDR to see if the leds change then.
+
+Mapped IR onto top 4 leds, dr onto bottom.
+The following sort of works...
+> runtest 5
+> irscan chip.gpios_tap 0xe -endstate IRPAUSE
+> drscan chip.gpios_tap 5 0x10               
+04
+> drscan chip.gpios_tap 5 0x1f
+00
+> drscan chip.gpios_tap 5 0x10
+00
+> drscan chip.gpios_tap 5 0x15
+00
+> drscan chip.gpios_tap 5 0x1a
+00
+... need 5 bits with MSB set, then the LSB 4 bits are loaded into the VIR.
+> irscan chip.gpios_tap 0xc -endstate IRPAUSE
+
+Can't seem to make the VDR do anything!
+ADDENDUM got it, need VIR=3 (EXSCAN instruction, arbitary value see verilog)
+> irscan chip.gpios_tap 0xe -endstate IRPAUSE
+> drscan chip.gpios_tap 5 0x13               
+00
+> irscan chip.gpios_tap 0xc -endstate IRPAUSE
+> drscan chip.gpios_tap 4 0x0f               
+09 ... the value I loaded in the verilog. YIPPEE!
+
+AHA clearing the MSB of the VIR shifts out some data in the VDR, I suspect this is the HUB INFO.
+Yes on page 33 ... The SLD hub is always 0 in the address map, as shown below (quote from pdf...)
+"Both the ADDR bits for the SLD hub and the HUB_INFO instruction is 0 × 0.
+Because m and n are unknown at this point, the DR register (ADDR bits + VIR_VALUE) must be filled with zeros.
+Shifting a sequence of 64 zeroes into the USER1 DR is sufficient to cover the most conservative case for m and n."
+
+> irscan chip.gpios_tap 0xe -endstate IRPAUSE
+> drscan chip.gpios_tap 5 0x0f    (should have used 0x00 but still seems OK for HUB INFO)
+00
+> irscan chip.gpios_tap 0xc -endstate IRPAUSE
+> drscan chip.gpios_tap 4 0xf                
+04 ... this is "m" the DR size
+> drscan chip.gpios_tap 4 0xf
+00
+> drscan chip.gpios_tap 4 0xf
+0e ... see next
+> drscan chip.gpios_tap 4 0xf
+06 ... 0x06e for manufacture id
+> drscan chip.gpios_tap 4 0xf
+08	... "n" is in bits 19..26 (split over 3 nibbles), so this is (0,0000,1) = 1 - num address bits
+> drscan chip.gpios_tap 4 0xf
+00
+> drscan chip.gpios_tap 4 0xf
+08  ... hub ip version
+> drscan chip.gpios_tap 4 0xf
+00
+> drscan chip.gpios_tap 4 0xf
+00
+> drscan chip.gpios_tap 4 0xf
+00
+Further nibble shifts give 0xe, 0x6, 0x0, 0x4 for NODE INFO (then it repeats with the HUB INFO). Page 34 says
+the 4 should be an 8, but maybe I'm misreading the sequence.
+
+So should be able to go back to the original system.svf and make it work now!
+
+===================================================================================
+LOOK!! openFPGALoader uses virtual jtag to load the flash EEPROM and has altera verilog using sld_virtual_jtag
+and altserial_flash_loader (seems incomplete, missing top and settings file)...
+/home/mark/misc/FPGA/quartus/openFPGALoader-master/spiOverJtag/altera_spiOverJtag.v
+... INVESTIGATE, may be useful. IR is 9 bits, how big is DR (is it in altserial_flash_loader?)
+===================================================================================
