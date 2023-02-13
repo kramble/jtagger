@@ -321,9 +321,10 @@ static int handle_message(char *s)
 					strcat (str, "Z");
 					respond(str);
 
-#if 1	// DEBUG (see note above about the meaning of the data, vis byte vs bit)
-					printf("read: %d bytes hex %s\n", bytes_read, hex);
-#endif
+					// DEBUG (see note above about the meaning of the data, vis byte vs bit)
+					if (!g_silent)
+						printf("read: %d bytes hex %s\n", bytes_read, hex);
+
 					if (hex)
 						free(hex);
 					g_server_status &= ~JSTA_RERROR;

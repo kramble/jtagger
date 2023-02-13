@@ -4,7 +4,7 @@ See https://beej.us/guide/bgipc/html//index.html (easy examples, which is why I'
 
 NB to list from shell use "ipcs" and "ipcrm" to delete them
 
-Uses ublast_access_ftdi.c from openocd for communication with Altera USB Blaster, plus code from usb_blaster.c
+Uses ublast_access_ftdi.c from OpenOCD for communication with Altera USB Blaster, plus code from usb_blaster.c
 hence including original copyright notice...
 
  SPDX-License-Identifier: GPL-2.0-or-later
@@ -21,9 +21,16 @@ hence including original copyright notice...
  *   Copyright (C) 2006 Kolja Waschk usbjtag@ixo.de
  *
 
+Actually I don't really use most of the usb_blaster.c code outside of ublast_initial_wipeout() which is easily
+refactored to avoid these calls. Currently I'm using raw hex strings gleaned from a reverse engineered OpenFPGALoader
+session (it was just the quickest way to get something that worked). So TODO, decide whether to convert that raw
+stuff into calls into the OpenOCD stack, or go it my own way (see scan_dr_int() for example) and strip it all out.
+
 */
 
 #include "common.h"
+
+#define MILLISECONDS 1000	// for usleep()
 
 int ftdi_ok;
 
@@ -268,7 +275,7 @@ static void ublast_initial_wipeout(void)
 		printf("wipeout...\n");
 
 	// These are the initial values (since info is .bss). The original openocd did not set them here (likely
-	// since it only called ublast_initial_wipeout() ONE from ublast_execute_queue() via first_call static int.
+	// since it only called ublast_initial_wipeout() ONCE from ublast_execute_queue() via first_call static int.
 	// HOWEVER in jtagger ublast_initial_wipeout() can be called again on a failure (after FTDI close/reopen)
 	// so ensure they are set correctly each time.
 
@@ -294,10 +301,10 @@ static void ublast_initial_wipeout(void)
 	// Send it twice (see note above) ... NB ublast_buf_write() calls respond() so sequence prefix is applied
 	ublast_buf_write(info.buf, bytes_to_send, &retlen);
 	if (!g_standalone)
-		usleep(100 * 1000);	// 100ms - allow time for the FTDI I/O operation
+		usleep(100 * MILLISECONDS);	// allow time for the FTDI I/O operation
 	ublast_buf_write(info.buf, bytes_to_send, &retlen);
 	if (!g_standalone)
-		usleep(100 * 1000);
+		usleep(100 * MILLISECONDS);
 
 	/*
 	 * Put JTAG in RESET state (five 1 on TMS)
@@ -307,7 +314,7 @@ static void ublast_initial_wipeout(void)
 
 	ublast_flush_buffer();	// MJ added this to write the TAP_RESET
 
-	usleep(100 * 1000);
+	usleep(100 * MILLISECONDS);
 
 	// After physically connecting the USB device cable, the first attempt to access the device
 	// returns the device ID mis-aligned. Flushing the read buffer TWICE fixes this (alternatively
@@ -318,7 +325,7 @@ static void ublast_initial_wipeout(void)
 
 	respond("RX80Z");	// Read 128 bytes to clear read buffer
 	if (!g_standalone)
-		usleep(500 * 1000);	// NB there normally is nothing to read, so FTDI I/O will timeout needing a longer usleep
+		usleep(500 * MILLISECONDS);	// NB there normally is nothing to read, so FTDI I/O will timeout needing a longer usleep
 
 	int retmsg = io_check();
 
@@ -330,7 +337,7 @@ static void ublast_initial_wipeout(void)
 	{
 		respond("RX80Z");	// Read another 128 bytes (seems to be necessary when previous read was non-zero bytes)
 		if (!g_standalone)
-			usleep(500 * 1000);
+			usleep(500 * MILLISECONDS);
 		int retmsg = io_check();
 		if (!g_silent)
 			printf("seconf flush of read buffer retmsg %08X\n", retmsg);
@@ -407,10 +414,10 @@ int runtest(int n)	// NOT static since called from program()
 // #define TEST_SCAN_DR	// Enable test
 
 #ifdef TEST_SCAN_DR		// DEBUG function, call from top of main() then exit
-char *test_scan_dr_int_expect;	// TESTING see test_scan_dr_int()
+static char *test_scan_dr_int_expect;	// TESTING see test_scan_dr_int()
 #endif
 
-static int scan_dr_int(unsigned int val, int bits)
+int scan_dr_int(unsigned int val, int bits)
 {
 	// Requires entry from RUN/TEST, exits in DRSHIFT mode (I think, TODO CHECK)
 	// Require a minimum of 4 bits since using hub scan as template, the final two
@@ -419,8 +426,7 @@ static int scan_dr_int(unsigned int val, int bits)
 	if (bits < 4 || bits > 32)
 	{
 		printf("scan_dr ERROR invalid bits %d\n", bits);
-		printf("***** ABORT ABORT ABORT *****\n");
-		exit(1);	// That's BAD, do not continue
+		DOABORT ("invalid bits");
 	}
 
 	// Construct (5 bit example) "WX2e2f2e2f2e2f2c2d2c2d2c2c6d2c6d2c6d2c6d2e7f3eZ");
@@ -490,191 +496,6 @@ static int test_scan_dr_int()
 }
 #endif
 
-static int print_nibble(void)
-{
-	// eg g_clientmsg.mtext == "9KRX02020203Z"
-	char *p = g_clientmsg.mtext + 4;
-	int n = 0;
-	for (int i=0; i<4; i++)
-	{
-		n >>= 1;
-		if (*p != '0')
-			printf("print_nibble: ERROR expected '0' got '%c'\n", *p);
-		int ch = *++p;
-		if (ch == '3')
-			n |= 8;
-		else if (ch != '2')
-			printf("print_nibble: ERROR expected '2|3' got '%c'\n", ch);
-		p++;
-	}
-	printf("nibble 0x%x (%d)\n", n, n);
-	return n;
-}
-
-static int get_hub_info(void)
-{
-	// Now exercise the Virtual Jtag, note the USER0 = 0xE and USER1 = 0xC values (use ONLY these)
-	// NB USER1 (VIR) = 0x00E and USER0 (VDR) = 0x00C (10 bits each)
-
-	// Specification for reading hubinfo is Altera manual ug_virtualjtag-683705-666577.pdf pages 33-34
-
-	unsigned int buildinfo = 0;
-	unsigned int hubinfo = 0;
-	unsigned int nodeinfo = 0;
-
-	tap_reset();	// Send TAP_RESET
-	runtest5();		// Move from TAP_RESET to RUN/IDLE
-
-	respond("WX2e2f2e2f2c2d2c2d2c810e2c2d2e2f2e2e2c2d2cZ");	// IRSHIFT USER1 0x0e
-
-	// Write 8 zeros to VIR (NB it's actually 5 bits but it is permissible to overscan when fetching hub info)
-	respond("WX2e2f2e2f2e2f2c2d2c2d2c2c6d2c6d2c6d2c6d2c6d2c6d2c6d2e6f2eZ");	// IRPAUSE to DRSCAN 8 zeros
-
-	clientflushrx();
-	respond("RX08Z");	// read 8 bytes (expect 0202020202020202, also 8 zeros)
-	io_check();
-
-	// Now scan out 32 bits from VDR as 8 nibbles
-
-	// BEWARE Altera manual ug_virtualjtag-683705-666577.pdf specifies DRSCAN of one nibble at a time.
-	// I tried scanning 32 bits in openocd and it FAILED! So the requirement is neccessary. AHA the
-	// need for UPDATE_DR is mentioned, which explains it (the sequences below go via RUN/TEST so
-	// this requirement is satisfied) ...
-
-/* QUOTE: The HUB IP configuration register is shifted out using eight four-bit nibble scans of the
-DR register. Each four-bit scan must pass through the UPDATE_DR state before the
-next four-bit scan. The 8 scans are assembled into a 32-bit value with the definitions
-shown in the table below */
-
-	respond("WX2e2e2f2c2d2cZ");	// from DRSHIFT to RUNIDLE)
-	respond("WX2e2f2e2f2c2d2c2d2c810c2c2d2e2f2e2e2c2d2cZ");	// IRSHIFT USER0 0x0c
-
-	scan_dr_int(0, 4);
-
-	clientflushrx();
-	respond("RX04Z");	// read 4 bytes
-	io_check();
-	buildinfo = (buildinfo >> 4) | (print_nibble() << 28);
-
-	// The remaining nibbles can loop (but not the first as the DRSCAN is different)
-	// Also scan out the node info for the first node (an extra 8 nibbles). If there were
-	// more nodes they would be scanned out in the same way (just increase the loop end value)
-
-	for (int i=1; i<16; i++)
-	{
-
-		respond("WX2e2e2f2c2d2cZ");	// from DRSHIFT to RUNIDLE) 
-		respond("WX2e2f2c2d2c2d2c2c6d2c6d2c6d2e6f2eZ");	// RUNIDLE to DRSCAN 4 bits
-
-		clientflushrx();
-		respond("RX04Z");	// read 4 bytes
-		io_check();
-		buildinfo = (buildinfo >> 4) | (print_nibble() << 28);
-
-		if (i==7)
-		{
-			hubinfo = buildinfo;
-			buildinfo = 0;
-		}
-	}
-
-	nodeinfo = buildinfo;
-
-	// NB a FPGA without a Virtual Jtag module will return 0xffffffff for both hubinfo and nodeinfo
-
-	printf("====================\n");
-	printf("hubinfo = 0x%08x\n", hubinfo);
-	printf("====================\n");
-
-	unsigned int expected_hubinfo = 0x08086e04;
-	if (hubinfo != expected_hubinfo)
-	{
-		// Value depends on the FPGA virtual jtag configuration vis VIR size, address size (number of instances)
-		printf("\n==================================================\n");
-		printf("WARNING hubinfo does not match expected %08x\n", expected_hubinfo);
-		printf("Check and update expected value if this is correct\n");
-		printf("==================================================\n");
-	}
-
-	printf("\n=====================\n");
-	printf("nodeinfo = 0x%08x\n", nodeinfo);
-	printf("=====================\n");
-
-	// Decode the hub and node info
-
-	printf("\nhub info m = %d mfg = 0x%x n = %d version = %d\n",
-				hubinfo & 0xff, (hubinfo>>8) & 0x1ff, (hubinfo>>19) & 0xff, (hubinfo>>27) & 0x1f);
-
-	printf("\nnode info inst = %d mfg = 0x%x id = %d version = %d\n\n",
-				nodeinfo & 0xff, (nodeinfo>>8) & 0x1ff, (nodeinfo>>19) & 0xff, (nodeinfo>>27) & 0x1f);
-
-	if (hubinfo != expected_hubinfo)
-		return ERROR_FAIL;
-
-	return 0;
-
-}	// end get_hub_info()
-
-static int vjtag_test(int vir, int vdr)
-{
-	printf("starting vjtag_test vir %d vdr %d\n", vir, vdr);
-
-	tap_reset();	// Send TAP_RESET
-	runtest5();		// Move from TAP_RESET to RUN/IDLE
-
-	respond("WX2e2f2e2f2c2d2c2d2c810e2c2d2e2f2e2e2c2d2cZ");	// IRSHIFT USER1 0x0e
-
-	// Write 5 bits VIR, address bit = 1 (msb) plus 4 instuction code bits.
-	// For system_basic.rbf these 4 bits will display one LEDS MSB.
-
-	// TDI is lsb of top nibble, vis 0x10 (so even nibbles are 0, odd are 1)
-	// Together with the read bit, this encodes as 6 or 7 followed by 2 or 3 in next byte
-	// TODO encode these via function (for now just hardcode a few)...
-
-	scan_dr_int(0x10 | vir, 5);	// IRPAUSE to DRSCAN 00001 (addr=1 is MSB, hence 0x10)
-
-	clientflushrx();
-
-	respond("RX05Z");	// read 5 bytes (expect 0202020202020202, 5 zeros)
-	io_check();
-
-	// Now load 5 bits into vdr - NB 4 bits are LEDs, the top bit is an enable so must be set.
-	/*
-		reg [NR_GPIOS:0]  gpio_dr;				// 5 bit DR
-
-		if (update_dr)
-			begin
-			if (gpio_dr[NR_GPIOS]) begin		// Test MSB for enable
-				gpio_outputs    <= gpio_dr[NR_GPIOS-1:0];
-			end
-		end
-	*/
-
-// Both of these work OK, so use the shorter one
-#if 1
-	respond("WX2e2e2f2c2d2cZ");	// from DRSHIFT to RUNIDLE)
-#else
-	tap_reset();	// Send TAP_RESET
-	runtest5();		// Move from TAP_RESET to RUN/IDLE
-#endif
-
-	respond("WX2e2f2e2f2c2d2c2d2c810c2c2d2e2f2e2e2c2d2cZ");	// IRSHIFT USER0 0x0c
-
-#if 0 	// KEEP this as a comment since referenced in io_check() as an example of how to cause a TIMEOUT
-
-	// This is WRONG, do not read IR... causes io_check() timeout since was no read data available
-	respond("RX04Z");	// read 4 bytes (captured IR)
-	io_check();
-#endif
-
-	scan_dr_int(0x10 | vdr, 5);		// IRPAUSE to DRSCAN, top bit is enable so set 0x10, bottom 4 are leds
-
-	clientflushrx();
-	respond("RX05Z");	// read 5 bytes (should be 0302020302 = 9 as verilog DRCaptures a const)
-	io_check();
-	return 0;
-}
-
 static int init_fpga(void)
 {
 	// Checks server status, opens FTDI if needed, and checks jtag functionality (queries fpga chip id)
@@ -691,7 +512,7 @@ static int init_fpga(void)
 
 	// Allow time for server to respond
 	if (!g_standalone)
-		usleep(10 * 1000);	// 10 milliseconds should be sufficient for status, FTDI I/O will take longer.
+		usleep(10 * MILLISECONDS);	// 10 milliseconds should be sufficient for status, FTDI I/O will take longer.
 	retmsg = clientflushrx();
 	if (!g_silent)
 		printf("status retmsg %08X\n", retmsg);
@@ -708,7 +529,7 @@ static int init_fpga(void)
 		printf("attemting to open FTDI...\n");
 		respond("JZ");
 		if (!g_standalone)
-			usleep(500 * 1000);	// 500 milliseconds since JCMD_OPEN takes longer
+			usleep(500 * MILLISECONDS);	// 500 milliseconds since JCMD_OPEN takes longer
 		retmsg = clientflushrx();
 		if (!g_silent)
 			printf("ftdi open retmsg %08X\n", retmsg);
@@ -722,7 +543,6 @@ static int init_fpga(void)
 	else if (retmsg != 0x3258534B)	// status is connected (and no error flags)
 	{
 		printf("bad status\n");
-			// return 3;
 			return ERROR_BADCHIP;	// caller will retry
 	}
 
@@ -731,7 +551,7 @@ static int init_fpga(void)
 	// Get status again (just for info)
 	respond("SZ");
 	if (!g_standalone)
-		usleep(10 * 1000);
+		usleep(10 * MILLISECONDS);
 	retmsg = clientflushrx();
 	if (!g_silent)
 		printf("status retmsg %08X\n", retmsg);
@@ -744,7 +564,7 @@ static int init_fpga(void)
 		// Get FTDI status
 		respond("HZ");
 		if (!g_standalone)
-			usleep(10 * 1000);
+			usleep(10 * MILLISECONDS);
 		retmsg = clientflushrx();
 		printf("ftdi status retmsg %08X\n", retmsg);
 		printf("message: %s\n", g_clientmsg.mtext);	// Demonstrate access to last message
@@ -791,17 +611,24 @@ static int init_fpga(void)
 
 	// Confirm the ID in the message
 
-	printf("=====================================\n");
 	if (!strncmp(g_clientmsg.mtext+1, "KRXDD300F02", 11))			// NB +1 to skip sequence prefix
+	{
+		printf("\n=====================================\n");
 		printf("FPGA identity MATCH OK ... %s\n", "0x020f30DD");	// Report canonical ID (as hardcoded string)
+		printf("=====================================\n");
+	}
 	else
 	{
-		printf("FPGA identity NO MATCH ... \n%s\n", g_clientmsg.mtext);
-		return ERROR_BADCHIP;	// caller will retry
+		char str[16];
+		strncpy(str, g_clientmsg.mtext+4, 8);
+		reverse(str);
+		printf("\n===========================================================================\n");
+		printf("WARNING FPGA identity CHIP ID %s is not Cylcone IV EP4CE22 (DE0-Nano)\n", str);
+		printf("===========================================================================\n");
+		// return ERROR_BADCHIP;	// No, this would restrict us to ONLY the EP4CE22 chip
 	}
-	printf("=====================================\n");
 
-	tap_reset();	// Send TAP_RESET
+	tap_reset();
 
 	// Openocd now performs "core.c:1364 jtag_validate_ircapture(): IR capture validation scan"
 	// ublast_state_move(): (from RESET to IRSHIFT)
@@ -838,7 +665,7 @@ static int init_fpga(void)
 	respond("RX04Z");	// read 4 bytes (NB bitbang, 03=one, 02=zero)
 	io_check();
 
-	printf("=========================\n");
+	printf("\n=========================\n");
 	if (strncmp(g_clientmsg.mtext+1, "KRX03020303Z", 12))	// NB LSB is on LEFT
 	{
 		printf("FPGA IR validate ERROR expected 1011 (KRX03020303Z) got %s\n", g_clientmsg.mtext);
@@ -847,45 +674,10 @@ static int init_fpga(void)
 
 	// The validated pattern is (11) 0101010101 (msb to lsb) 0x155
 	printf("FPGA IR validate 0x155 OK\n");
-	printf("=========================\n");
+	printf("=========================\n\n");
 
 	return 0;
 }
-
-static int jtagger(void)
-{
-	printf("starting jtagger\n");
-
-	if (get_hub_info())
-	{
-		printf("NOT proceeding with vjtag_test()\n");
-		return 5;
-	}
-
-	int dsec = 1000 * 1000;
-
-	// test vir
-	int startat = 0;
-	// startat = 12;	// DEBUG shorten tests by setting higher start value (up to 15)
-	for (int i=startat; i<16; i++)
-	{
-		vjtag_test(i,0);
-		usleep(dsec);
-	}
-
-	// test vdr ... NB need VIR=3 (see verilog EXTEST mode) to enable VDR loading to LEDs
-	// plus the MSB set to enable LED output (this is added in vjtag_test() so no need here)
-	for (int i=startat; i<16; i++)	
-	{
-		vjtag_test(3,i);
-		usleep(dsec);
-	}
-
-	vjtag_test(3,0);	// DR Leds off
-	vjtag_test(0,0);	// IR Leds off
-
-	return 0;
-}	// end jtagger()
 
 static void usage(void)
 {
@@ -905,7 +697,7 @@ static void help(void)
 
 "OPTIONS\n"
 "-v sets verbose mode.\n"
-"-s communicates with separate jtag server (see below).\n"
+"-s communicates with a separate jtag server (see below).\n"
 "-p will program a .svf file (default %s), likely BUGGY (use -r instead)\n"
 "-r will program a .rbf file (default %s), must not be compressed.\n"
 // "-x will program a .special file (default %s), used for debugging.\n"
@@ -943,7 +735,7 @@ int main (int argc, char **argv)
 	while (argc > 1)
 	{
 		if (!argv || !argv[1])
-			doabort(__func__, "argv");	// Should not happen
+			DOABORT ("argv");	// Should not happen
 
 		if (!strcmp(argv[1], "-h") || !strcmp(argv[1], "-?") || !strcmp(argv[1], "--help"))
 		{
@@ -1022,7 +814,7 @@ int main (int argc, char **argv)
 	if (filetype)
 	{
 		if (!fname)
-			doabort(__func__, "fname");
+			DOABORT ("fname");
 
 		if (!verbose)
 			g_silent = 1;		// BEWARE may be overriden in program.c/parse()
@@ -1088,11 +880,11 @@ int main (int argc, char **argv)
 			printf("Retrying close/open FTDI device\n");
 			respond("UZ");
 			if (!g_standalone)
-				usleep(1000 * 1000);
+				usleep(1000 * MILLISECONDS);
 			clientflushrx();
 			respond("JZ");
 			if (!g_standalone)
-				usleep(1000 * 1000);
+				usleep(1000 * MILLISECONDS);
 			clientflushrx();
 			// NB ftdi_ok status is updated in jtagger()
 		}
@@ -1100,17 +892,17 @@ int main (int argc, char **argv)
 		if (ret)
 		{
 			printf("jtagger exit with ERROR %d\n", ret);
-			if (ret != ERROR_BADCHIP)	// Error code indicates invalid chip ID, so retry by closing/reopening FTDI
+			if (ret != ERROR_BADCHIP && ret != ERROR_IRVALIDATE)	// Retry by closing/reopening FTDI
 				break;	// Quit on any other errors
 			err = 1;
 		}
 		else
 		{
-			ret = jtagger();
+			ret = usercode();
 			// printf("jtagger exit with status %d\n", ret);
 			break;	// Omit this break in order to to loop regardless of successful result
 		}
-		usleep (2000 * 1000);	// 2 seconds between retries
+		usleep (2000 * MILLISECONDS);	// 2 seconds between retries
 	}
 
 	// Finish with TAP_RESET (safe since server will reject if FTDI not open, but check ftdi_ok anyway

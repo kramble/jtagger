@@ -11,7 +11,7 @@ run the pre-existing windows version via wine, but needed to boot into Vista to 
 DE0-Nano. Also tcl is a right pain for communicating with the device, and I wanted something
 I could call from C instead.
 
-I came accross OpenOCD which is nice, but rather complex (it takes a full 10 minutes to build),
+I came across OpenOCD which is nice, but rather complex (it takes a full 10 minutes to build),
 and still relies on that [REDACTED] tcl interpreter. OpenFPGALoader is simpler and works very
 well as a programmer, so with both tools I was able to both program and communicate with a
 test FPGA design (see fpga/vjtag) which was based on https://github.com/tomverbeure/jtag_gpios
@@ -68,7 +68,7 @@ source should be modified to support your own system requirements).
 
 OPTIONS
 -v sets verbose mode.
--s communicates with separate jtag server (see below).
+-s communicates with a separate jtag server (see below).
 -p will program a .svf file (default system.svf), likely BUGGY (use -r instead)
 -r will program a .rbf file (default system.rbf), must not be compressed.
 NB only Altera/Intel Quartus .svf programming files are supported as the svf

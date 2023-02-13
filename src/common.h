@@ -33,31 +33,39 @@
 #define JSTA_WERROR 0x40
 #define JSTA_RERROR 0x80
 
+// Client/Server message protocol. I'm using ASCII strings as it's simple and easy to debug.
+// Single letter commands, some of which are a little contrived as I reserved A-F for hex digits.
+
 // NB these are single chars not strings, 0-9, A-F are reserved for hex
-// BEWARE these are for documentation, program code actually writes strings directly
+// BEWARE these are for documentation, the program code mostly hard-codes the values directly in strings
 
 // Client transmits (command letter, optional hex digits then Z)
-#define JMSG_QUIT 'Q'	// Q for halt
+#define JMSG_QUIT 'Q'	// Q for quit
 #define JMSG_STATUS 'S'	// S for status
 #define JMSG_MODE 'M'	// M for mode
-#define JMSG_FTDIOPEN 'J'	// J for ftdi open
-#define JMSG_FTDICLOSE 'U'	// U for ftdi close
+#define JMSG_FTDIOPEN 'J'	// J for ftdi open (j since jtag)
+#define JMSG_FTDICLOSE 'U'	// U for ftdi close (u like unjtag)
 #define JMSG_FTDISTATUS 'H'	// H for hardware status
 #define JMSG_READ 'R'	// R for read from ftdi
 #define JMSG_WRITE 'W'	// W for write to ftdi
-#define JMSG_HEX 'X'	// X introduces hex string (NOT an initial command letter)
+#define JMSG_HEX 'X'	// X introduces a hex string (it is NOT an initial command letter)
 #define JMSG_END 'Z'	// Z for end of message
 
 // Server transmits (response letter, recieved command letter, optional hex digits then Z)
 #define JMSG_OK 'K'		// K for OK
 #define JMSG_ERROR 'N'	// N for no (since E is hex)
-#define JMSG_INVALID 'Q'	// I for invalid message
+#define JMSG_INVALID 'I'	// I for invalid message
 
 #define MSGBUFLEN (16 + 2 * BUF_LEN)	// Allow space for command string plus hex-encoded write buffer
+
 struct jtag_msgbuf {
     long mtype;
     char mtext[MSGBUFLEN];
 };
+
+#define DOABORT(s) doabort(__func__, s)
+
+#define TOHEX(n) (((n) & 15) > 9 ? (((n)&15) -10 + 'a') : (((n)&15) + '0'))		// Convert low nibble to hex char
 
 extern int g_isserver;		// Set to 1 for server, 0 for client (allows common init routine)
 
@@ -94,6 +102,7 @@ extern struct jtag_msgbuf g_clientmsg;		// See clientflushrx()
 void doabort(const char *func, char *s);
 char *hexdump(uint8_t *buf, unsigned int size);
 int char2hex(unsigned char c);
+void reverse(char *s);
 int parse_hex(char *s, uint8_t *buf, int *bufidx);
 int initmessage();
 int respond(char *s);
@@ -102,8 +111,10 @@ int io_check(void);
 int tap_reset(void);
 int runtest5(void);
 int runtest(int n);
+int scan_dr_int(unsigned int val, int bits);
 int program_fpga(char *fname, int filetype);
 int serve_alone(char *msg);
 int client(void);
 int server(void);
+int usercode(void);
 

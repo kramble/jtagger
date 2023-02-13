@@ -2,6 +2,12 @@
 
 For spec see /home/mark/misc/FPGA/quartus/jtagger/docs/svf_specification.pdf
 For hints see /home/mark/misc/FPGA/quartus/openFPGALoader-master
+Altera's Jrunner has lots of JTAG stuff, including IR opcodes, chip ids and consts for determining
+the scan length for the configuration status check (SDR 732 TDI in the svf example below), eg
+	EP4CE22E22 {0x20F30DD, 244, 149, 10},	... NB mutiply by 3, so SDR 732 and check bit 447
+I suspect this is doing a boundary scan and testing the CONFIG_DONE pin, even though the CHECK_STATUS (0x4)
+opcode is not the same as the boundary scan codes. See the cyclone5_handbook.pdf which describes opcode functions,
+including scary looking private "do not use, these may destroy chip" opcodes (O_o)
 
 To generate a SVF from Quartus SOF file...
 $ wine /media/mark/Vista/altera/10.1/quartus/bin/quartus_cpf.exe -c -q 12.0MHz -g 3.3 -n p system.sof system.svf
@@ -43,8 +49,9 @@ STATE IDLE;
 
 #include "common.h"
 
-#define PROGERR_FILE 101	// File I/O
-#define PROGERR_BOUNDS 102	// Array bounds overflow
+// Parse error codes, see printerror() at the bottom for descriptions
+#define PROGERR_FILE 101
+#define PROGERR_BOUNDS 102
 #define PROGERR_STAGE 103
 #define PROGERR_CLOCKS 104
 #define PROGERR_TDIDATA 105
@@ -53,29 +60,14 @@ STATE IDLE;
 #define PROGERR_BYTES 108
 
 // This is the large static buffer shared by both filetype versions of the programmer
-//#define HEXBUF (2 * 1024 * 1024)	// Sufficient for De0-Nano Cyclone EP4CE22 FPGA
+// TODO allocate dynamically and resize as neccessary
+// #define HEXBUF (2 * 1024 * 1024)	// (Old value) sufficient for the De0-Nano Cyclone EP4CE22 FPGA
 #define HEXBUF (16 * 1024 * 1024)	// It's bss so no harm making this a lot bigger (in case someone has a HUGE fpga)
 static char buf[HEXBUF];			// Retain buffer from run==0 for run==magic call
 
 int g_lineno;	// Used in printerror() so global
 int g_databytes;
-unsigned int g_clocks;	// TDI from svf
-
-#define TOHEX(n) (((n) & 15) > 9 ? (((n)&15) -10 + 'a') : (((n)&15) + '0'))		// Convert nibble to hex char
-
-// reverse string in place 
-static void reverse(char *s)
-{
-	char *j;
-	int c;
-	j = s + strlen(s) - 1;
-	while (s < j)
-	{
-		c = *s;
-		*s++ = *j;
-		*j-- = c;
-	}
-}
+unsigned int g_clocks;	// Reads value from "SDR 5748760 TDI"
 
 static int begin_programming()
 {
@@ -92,19 +84,21 @@ static int begin_programming()
 	// runtest5();
 	// respond("WX2c2d2c2d2c2d2c2d2c2d2cZ");
 
-	// openFPGALoader (log file analysis) does ...
+	// openFPGALoader (log file analysis) does this ...
+	// It looks like some checks (readback IR), then IRSCAN 0x2 PROGRAM (see the "8102" substring)
 	respond("WX3e3f3e3f3e3f3e3f3e3f3e3f2e3c3d3e3f3c3d3c3d2c2cc4ffffffff2cc4ffffffff2cc4ffffffff2cc4ffffffff2cc3ffffff"
 			"3c7d3c7d3c7d3c7d3c7d3c7d3c7d3e7f3e3e3f3e3f3e3f3e3f3e3f3e3f2e3e3f3e3f3e3f3e3f3e3f3e3f2e3c3d2c3e3f3e3f"
 			"3c3d3c3d2c2c81022c2d2e2f2e3c3d2c3e3f3e3f3c3d2c2cZ");
 
-	// SIR 10 TDI (002);	... IRSCAN 0x2
+	// SIR 10 TDI (002);	... IRSCAN 0x2 PROGRAM
 
 	// respond("WX3e3f3e3f3c3d3c3d2c2c81022c2d2e2f2e3c3d2c3e3f3e3f3c3d2c2cZ");	// IRSHIFT 0x02
 
 	// RUNTEST IDLE 24000 TCK ENDSTATE IDLE;
 	runtest(24000);
 
-	// openFPGALoader (log file analysis) does ...
+	// openFPGALoader (log file analysis) does ... ignoring the 3's which are TDI, it's not tap_reset or runtest(5)
+	// perhaps just a move from IRSCAN to RUN/REST?
 	respond("WX2c3e3f3c3d3c3d2c2cZ");
 
 	return 0;
@@ -112,11 +106,12 @@ static int begin_programming()
 
 static int finish_programming()
 {
-	// SIR 10 TDI (004);
+	// SIR 10 TDI (004);	... IRSCAN 0x4 CHECK_STATUS
 	// RUNTEST 120 TCK;
-	// SDR 732 TDI (0000 ....
+	// SDR 732 TDI (...)	... NB this is chip-specific (see note at top, jrunner has all the values)
+	//							TODO if programming a .rbf we need check the device ID against the table from jrunner
 
-	// openFPGALoader...
+	// openFPGALoader... IRSCAN 0x4 CHECK_STATUS (see the "8104" substring)
 	respond("WX2c2d2c2d2c2d2c2d2c2d2c2d2c2d2e2f2e3e3f3c3d2c3e3f3e3f3c3d3c3d2c2c81042c2d2e2f2e3c3d2c3e3f3e3f3c3d2c2cZ");
 	respond("WX8f000000000000000000000000000000Z");
 	respond("WX2c3e3f3c3d3c3d2c2cZ");
@@ -126,34 +121,40 @@ static int finish_programming()
 
 	respond("WX2c6d2c6d2c6d2e6f2e3e3f3c3d2c3e3f3e3f3c3d3c3d2c2c81032c2d2e2f2e3c3d2c3e3f3e3f3c3d2c2cZ");
 
+	// SIR 10 TDI (003);	... IRSCAN 0x3 STARTUP
 #if 0
-	// SIR 10 TDI (003);
 	respond("WX2e2f2e2f2c2d2c2d2c81032c2d2e2f2e2e2c2d2cZ");	// IRSHIFT 0x03
 	// need to get to IDLE, so whatever is needed, maybe...
 	respond("WX2e2e2f2c2d2cZ");	// from DRSHIFT to RUNIDLE (should work for IRSHIFT)
 #endif
 
-	// TEST early return (experiment...)
+	// Note that the chip initialises significantly BEFORE the end of the programming sequence, this is
+	// because the sequence ends with a long "RUNTEST 120000 TCK", before setting IR BYPASS mode.
+	// The Cyclone V handbook suggests a much smaller value ... "After the configuration data is transmitted serially
+	// using the JTAG TDI port, the TCK port is clocked an additional 1,222 cycles to perform device initialization."
+	// However the DE0-Nano has a Cyclone IV part which may be different. Jrunner has INIT_COUNT 200, but that seems
+	// way too short since runtest(1200) failed above. TODO rig up a test harness for jrunner and revese engineer it.
+
+	// TEST shorter startup (note the early return, this bypasses the final BYPASS so we really don't want that
+	// in the final version).
 
 	// runtest(1200);		// NO, NOT programmed
 	// runtest(6000);		// YES, programmed
 	// return 0;	
 
-	// So we could reduce this, but it's so ridiculously fast anyway that I won't risk it
+	runtest(120000);	// This is the value from the Quartus 10.0 SVF file
 
-	runtest(120000);	// This is the svf value
-
-	return 0;
+	// So we could reduce this (as tested above), but it's so ridiculously fast anyway that I won't risk it
 
 	respond("WX2c2cZ");
 
 	runtest(512);
 
-	// openFPGALoader
-	respond("WX2c3e3f3e3f3c3d3c3d2c2c81ff3c3d3e3f3e3c3d2c3e3f3e3f3c3d2c2cZ");
-
 //	respond("WX2e2f2e2f2c2d2c2d2c81ff3c3d3e3f3e3e3c3d2cZ");	// IRSHIFT 0x3ff (unsure about top bits 3c3d etc)
 //	respond("WX2e2e2f2c2d2cZ");	// from DRSHIFT to RUNIDLE (should work for IRSHIFT)
+
+	// openFPGALoader
+	respond("WX2c3e3f3e3f3c3d3c3d2c2c81ff3c3d3e3f3e3c3d2c3e3f3e3f3c3d2c2cZ");	// sets BYPASS IRSHIFT 0x3ff
 
 	runtest(24000);
 	respond("WX2cZ");	// openFPGALoader has this, but I guess it's superfluous
@@ -175,7 +176,7 @@ static int push_data(char *token)
 	static char *p = buf;
 
 	char ch;
-	if (1)
+	if (1)	// TODO remove and un-indent
 	{
 		int nibble = 0;	// HACK to swap hex chars (see reverse further down)
 		while ((ch = *token++))	// assignment, and test > NULL (gcc wants double brackets here -Wparentheses)
@@ -218,11 +219,10 @@ static int push_data(char *token)
 			pend++;
 		}
 
-		// if (ch != ')')	// End of data
 		return ch;
 	}
 
-	return 0;
+	return 0;	// yeah, could happen, if token was empty string
 }
 
 static int send_data(void)
@@ -362,7 +362,7 @@ static int parse_rbf(FILE *f, int run)
 
 	if (run == 0)
 	{
-		size_t expected = 718569;
+		size_t expected = 718569;	// That's specific to EP4CE22
 		size_t len = fread(p, 1, sizeof(buf), f);
 		if (len == sizeof(buf))
 			doabort(__func__, "buffer overflow, TODO increase HEXBUF");
@@ -407,18 +407,8 @@ static int parse_rbf(FILE *f, int run)
 		unsigned char ch = *p++;
 
 		// Two hex chars (bytes)
-#if 0		
-		char tmp[3];
-		sprintf(tmp, "%02x", ch);	// Inefficient, TODO properly, DONE see #else
-		*dst++ = tmp[0];
-		*dst++ = tmp[1];
-		*dst = 0;
-#else
 		*dst++ = TOHEX(ch>>4);
 		*dst++ = TOHEX(ch);
-		// printf("%02x, %02x, '%c', %02x, '%c'\n", ch, dst[-2], dst[-2], dst[-1], dst[-1]);
-		// doabort(__func__,"test TOHEX");
-#endif
 
 		if (++byte > 62)
 		{
@@ -484,6 +474,16 @@ static int parse_rbf(FILE *f, int run)
 		
 static int parse_openFPGALoader_analysis(FILE *f, int run)
 {
+/*	NB this is a debug function (called via the undocumented -x switch), which reads a dump from
+	a (custom) OpenFPGALoader session, format...
+    0 len   23 3e 3f 3e 3f 3e 3f 3e 3f 3e 3f 3e 3f 2e 3c 3d 3e 3f 3c 3d 3c 3d 2c 2c
+    1 len    5 c4 ff ff ff ff
+    2 len    1 2c
+    3 len    5 c4 ff ff ff ff
+    etc. This is a complete dump of all the FTDI write data, so was very useful for testing (it
+    successfuly programs the DE0-Nano), but is now superceeded by -r for a standard rbf file.
+*/
+
 	const char *func = __func__;	// for doabort
 
 	// Keep the magic incantation local to parse(), make the caller remember it separately
@@ -559,7 +559,8 @@ static int parse_openFPGALoader_analysis(FILE *f, int run)
 		pend = p;
 		printf("loaded sequences %d bytes %ld\n", seq, (pend-buf)/2);
 		// printf("loaded seq %d buf %p pend %p total %ld\n", seq, buf, pend, pend-buf);
-		if (seq != 11793)
+
+		if (seq != 11793)	// NB this is debugging (-x file, EP4CE22), so keep this as an error
 			doabort(func, "bad seq count");
 
 		return 0;
@@ -573,7 +574,7 @@ static int parse_openFPGALoader_analysis(FILE *f, int run)
 
 	size_t len = pend - buf;
 	if (len != 1503556 + seq + 1)	// Allow for all the nulls added as string terminators
-		doabort(func, "bad len (total hex chars)");
+		doabort(func, "bad len (total hex chars)");	//  Again just for -x, see above
 
 	// Pack multiple FTDI writes into max size message ... see packmode above
 	char packbuf[BUF_LEN];	// NB BUF_LEN is message buffer
@@ -653,9 +654,10 @@ static int parse (FILE *f, int run, int filetype)
 
 //	g_silent = 0;		// DEBUG turn OFF silent in client
 //	respond("MX03Z");	// DEBUG turn OFF silent in server (keep spoofing - DEBUG ONLY)
-//	g_debug_log = 1;	// DEBUG log writes
+//	g_debug_log = 1;	// DEBUG log writes (create our very own hex dump of FTDI write calls, useful for
+						// comparing with the OpenFPGALoader dump mentioned above, after a bit of text wrangling)
 
-	// This value likely depends on the FPGA device family/part number
+	// This value likely depends on the FPGA device family/part number (see notes above on jrunner)
 	unsigned int expect_clocks	= 5748760;
 
 	// Keep the magic incantation local to parse(), make the caller remember it separately
@@ -687,14 +689,15 @@ static int parse (FILE *f, int run, int filetype)
 
 	// This is going to be quite crude, just need to sucessfully read a Quartus svf file so that's
 	// all I'm going to implement support for. I'm going to assume they are all very similar, so if
-	// I can parse one, then I'm done.
+	// I can parse one, then I'm done. [COMMENTARY: this was the original parser, for svf. Now that I
+	// support rbf files, it's not really worth bringing this up to production quality (a HUGE amount
+	// of work). Perhaps I should just remove the svf option entirely?]
 
 	int ch;
 	int comment = 0;	// Set to '!' after '!' or '/' after single '/' and '!' after a pair
 	int slash = 0;		// For parsing single slash
 	int wanttoken = 1;
 	int stage = 0;		// Parsing token sequence
-	// unsigned int clocks = 0;	// Expect 5748760 now a global g_clocks
 	char token[1024];	// Needs to be able to hold entire line (max expected 256)
 	char *ptoken = token;
 
@@ -851,6 +854,7 @@ void printerror(int err)
 	}
 
 	// To save on typing, do all error printing here (called from end of main)
+	// UMMM, OK they're a bit silly. But I'm quite fond of them now. So there.
 	printf("ERROR line %d ", g_lineno);
 	switch (err)
 	{

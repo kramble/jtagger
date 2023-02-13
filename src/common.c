@@ -64,6 +64,19 @@ int char2hex(unsigned char c)
 		return c - '0';
 }
 
+void reverse(char *s)	// reverse a string in place 
+{
+	char *p;
+	int c;
+	p = s + strlen(s) - 1;
+	while (s < p)
+	{
+		c = *s;
+		*s++ = *p;
+		*p-- = c;
+	}
+}
+
 int parse_hex(char *s, uint8_t *buf, int *bufidx)
 {
 	// Parse command string of form eg "WX0123456789ABCDEFZ" or "RXnnnnZ"
@@ -313,12 +326,15 @@ int respond(char *s)
 	strncpy(msg.mtext+1, s, sizeof(msg.mtext)-1);	// BEWARE max length string is NOT terminated
 
 #if 1	// DEBUG
-	char printbuf[64];
+	if (!g_silent)
+	{
+		char printbuf[64];
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wformat-truncation"
-	snprintf(printbuf, sizeof(printbuf)-1, "tx: %s", msg.mtext);
+		snprintf(printbuf, sizeof(printbuf)-1, "tx: %s", msg.mtext);
 #pragma GCC diagnostic pop
-	if (!g_silent) puts(printbuf);	// NB adds \n
+		puts(printbuf);	// NB adds \n
+	}
 #endif
 
 	if (msgsnd(g_msqtx, &msg, len, 0) == -1)

@@ -1,0 +1,29 @@
+2023-02-12 First release on github
+
+2023-02-13 Minor refactoring, bugfixes
+
+Separated the user code into usercode.c and moved some stuff around (it would
+be useful to make the main code a library, but baby steps for now).
+
+Made the default (without -v) significantly less chatty (I had left a lot
+of debug stuff enabled by default).
+
+Downgraded some errors to warnings so it should now work with FPGAs other than
+the EP4CE22 (ie not just the DE0-Nano). Probably still only the Altera/Intel
+Cyclone family, but YMMV.
+
+NEWS
+Looking ahead ... building a more functional verilog demo, still pretty basic
+but the eventual aim is to communicate with a soft-core CPU (I've successfully
+used the OpenCores Amber ARM2-compatible CPU in previous projects). This very
+likely duplicates other existing jtag uart-based code (and yes, OpenOCD), but
+the objective here is to avoid dependancy on Quartus and to KISS.
+
+Also a Windows port looks quite promising. It compiles on cygwin (which I was
+surprised to find is included with Quartus 10.1, who knew?) That uses a very
+old version of gcc but adding CFLAGS -std=c99 fixes most of the issues).
+HOWEVER it compiles only after commenting out the FTDI calls. The SYSTEM V
+messaging headers are present but that does not actually work on cygwin (this
+is no great loss as it's not needed for standalone). So I just need to get
+libftdi working on windows (it seems that it is supported according to some
+quick googling). SIGH, I was getting quite used to Linux Mint, bah Windows :-(

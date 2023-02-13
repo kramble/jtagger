@@ -2,11 +2,13 @@ CC = gcc
 CFLAGS = -Wall
 LIBS = -lftdi
 
+USERCODE = usercode.o
+
 HEADERS = common.h misc.h
-COMMONOBJS = ublast_access_ftdi.o common.o server.o
+COMMONOBJS = common.o server.o ublast_access_ftdi.o
 SERVEROBJS = servermain.o $(COMMONOBJS)
-JTAGGEROBJS = jtagger.o program.o $(COMMONOBJS)
-ALLOBJS = jtagger.o servermain.o program.o $(COMMONOBJS)
+JTAGGEROBJS = jtagger.o program.o $(USERCODE) $(COMMONOBJS)
+ALLOBJS = jtagger.o servermain.o program.o $(USERCODE) $(COMMONOBJS)
 
 SERVEREXE = jtagserver
 JTAGGEREXE = jtagger
