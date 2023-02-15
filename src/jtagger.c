@@ -360,23 +360,36 @@ int runtest5(void)	// NOT static since called from program()
 
 int runtest(int n)	// NOT static since called from program()
 {
-	// From openFPGALoader (log file analysis)
-	if ((n & 7) || (n < 16))	// Only allow multiples of 8
+	char buf[256];
+
+	if (n < 1)
+		DOABORT("n < 1");
+
+	// Check for bits that won't fit into byte packet
+	int residual = (n & 7);
+
+	if (n < 16)			// Always bitbang if < 2 bytes
+		residual = n;
+
+	if (residual)
 	{
-		printf("runtest: input bad n = %d\n", n);
-		exit(1);
+		strcpy(buf, "WX");
+		int i = residual;
+		while (i--)
+			strcat(buf, "2c2d");
+		strcat(buf, "Z");	// uses max 64 chars, inc null
+		respond(buf);
 	}
 
-	// Construct buffer for main bulk
-	char buf[256];
+	if (0 == (n -= residual))
+		return 0;
+
+	// Construct buffer for bulk write
 	strcpy(buf, "WXbf");	// 63 bytes in byte mode
 	for (int i=0; i<63*2; i++)
 		buf[4+i] = '0';		// char '0' giving 63 hex pairs "00"
 	buf[130] = 'Z';
 	buf[131] = 0;			// terminate
-
-	// TODO print that to check ... call standalone from main()
-	// printf("runtest <%s>\n", buf);
 
 	// TODO pack multiple of these into a max size message (NB use respond so as to prefix sequence)
 
@@ -496,12 +509,39 @@ static int test_scan_dr_int()
 }
 #endif
 
-static int init_fpga(void)
+static int find_device(unsigned int device_id)
+{
+	for (int i=1; /* empty */; i++)	// NB first array entry is for defaults, so search from 1
+	{
+		int j;	// Check for all entries zero (end of device_params[] array). Risks a segfault
+				// if device_params[] is misconfigured, but I did warn quite firmly in devices.c
+		for (j=0; j<=DEVICE_PARAMS_MAXINDEX; j++)
+			if (device_params[i][j])
+				break;
+		if (j > DEVICE_PARAMS_MAXINDEX)
+			break;		// return 0
+
+#if 0	// DEBUG
+		printf("device_params %d %d %d %d %d %d\n", device_params[i][0], device_params[i][1], device_params[i][2],
+			device_params[i][3], device_params[i][4], device_params[i][5]);
+
+		printf("device_params[%d][0] %08x compare device_id %08x\n", i, device_params[i][0], device_id);
+#endif
+		if (device_params[i][DEVICE_PARAMS_MAXINDEX_CHIP_ID] == device_id)
+			return i;	// found
+	}
+	return 0;		// NB device_index=0 explicitly means not found
+}
+
+static int init_fpga(int *device_index)
 {
 	// Checks server status, opens FTDI if needed, and checks jtag functionality (queries fpga chip id)
 
 	printf("init_fpga\n");
 	ftdi_ok = 0;	// Assume NOT connected OK - BEWARE main() may attempt connection but status is checked here
+
+	if (!device_index)
+		DOABORT("device_index");
 
 	// Discard any pending messages
 	int retmsg = clientflushrx();
@@ -611,19 +651,34 @@ static int init_fpga(void)
 
 	// Confirm the ID in the message
 
-	if (!strncmp(g_clientmsg.mtext+1, "KRXDD300F02", 11))			// NB +1 to skip sequence prefix
+	char idstr[16];
+	unsigned int device_sc = 0, device_id;
+	strncpy(idstr, g_clientmsg.mtext+4, 8);
+
+//  NB this leaves the hex digit pairs swapped, hence the fix below, TODO alternatively ntohl() or bswap_32()
+//	reverse(idstr);
+	sscanf(idstr, "%x", &device_sc);
+//	device_id = ((device_sc & 0xf0f0f0f0) >> 4) | ((device_sc & 0x0f0f0f0f) << 4);
+	device_id = bswap_32(device_sc);
+
+	// device_id = 0x12345678;	// TEST non-match
+
+	*device_index = find_device(device_id);
+
+	if (!g_silent)
+		printf("device_id [%s] %08x index %d\n", idstr, device_id, *device_index);
+
+	if (*device_index)	// NB device_index=0 explicitly means not found
 	{
-		printf("\n=====================================\n");
-		printf("FPGA identity MATCH OK ... %s\n", "0x020f30DD");	// Report canonical ID (as hardcoded string)
-		printf("=====================================\n");
+		printf("\n===================================\n");
+		printf("FPGA identity MATCH OK ... %08x\n", device_id);
+		printf("===================================\n");
 	}
 	else
 	{
-		char str[16];
-		strncpy(str, g_clientmsg.mtext+4, 8);
-		reverse(str);
 		printf("\n===========================================================================\n");
-		printf("WARNING FPGA identity CHIP ID %s is not Cylcone IV EP4CE22 (DE0-Nano)\n", str);
+		printf("WARNING FPGA identity CHIP ID %08x is not recognised (update devices.c)\n", device_id);
+		printf("RBF programming will use default parameters which may not be appropriate\n");
 		printf("===========================================================================\n");
 		// return ERROR_BADCHIP;	// No, this would restrict us to ONLY the EP4CE22 chip
 	}
@@ -681,7 +736,6 @@ static int init_fpga(void)
 
 static void usage(void)
 {
-	// printf("Usage: jtagger --help -v -p filename.svf -x filename.special\n");
 	printf("Usage: jtagger --help -v -p filename.svf -r filename.rbf\n");
 }
 
@@ -700,7 +754,6 @@ static void help(void)
 "-s communicates with a separate jtag server (see below).\n"
 "-p will program a .svf file (default %s), likely BUGGY (use -r instead)\n"
 "-r will program a .rbf file (default %s), must not be compressed.\n"
-// "-x will program a .special file (default %s), used for debugging.\n"
 "NB only Altera/Intel Quartus .svf programming files are supported as the svf\n"
 "parsing is very crude, tested on Quartus 10.1 (other versions may not work).\n\n"
 
@@ -715,7 +768,6 @@ static void help(void)
 "You may find those projects more useful than jtagger which was written as a\n"
 "personal project to drive a vitual jtag hub without needing Quartus installed.\n"
 "Nevertheless, you may be pleasantly surprised at just how FAST it programs!\n"
-// , PROGRAMFILE_S, PROGRAMFILE_R, PROGRAMFILE_X, SOCKFILE);
 , PROGRAMFILE_S, PROGRAMFILE_R, SOCKFILE);
 }
 
@@ -725,11 +777,20 @@ int main (int argc, char **argv)
 	// It skips init_fpga and disables respond() ... no messages are sent to server
 	g_spoofprog = 0;
 
+	if (g_spoofprog)
+	{
+		printf("==============================================================\n");
+		printf("****** SPOOFING  SPOOFING  SPOOFING  SPOOFING  SPOOFING ******\n");
+		printf("==============================================================\n");
+	}
+
 	g_strictrx = 1;		// Always use this now (non-strict is bad, keep option for debugging only)
+
+	int device_index = 0;	// Holds index into device_params[] after fpga_init(), 0 means not found (uses default)
 
 	// Process command line. TODO use getopt
 	int verbose = 0;
-	int filetype = 0;
+	int filetype = FILETYPE_NONE;
 	char *fname = NULL;
 
 	while (argc > 1)
@@ -760,7 +821,7 @@ int main (int argc, char **argv)
 			continue;
 		}
 
-		if (!strncmp(argv[1], "-p", 2) || !strncmp(argv[1], "-x", 2) || !strncmp(argv[1], "-r", 2))
+		if (!strncmp(argv[1], "-p", 2) || !strncmp(argv[1], "-r", 2))
 		{
 			if (filetype)
 			{
@@ -769,17 +830,12 @@ int main (int argc, char **argv)
 				return 1;
 			}
 
-			filetype = 1;
+			filetype = FILETYPE_SVF;
 			fname = PROGRAMFILE_S;
-			if (argv[1][1] == 'x')
-			{
-				filetype = 2;
-				fname = PROGRAMFILE_X;	// see analyze.c (processes openFPGALoader custom logfile)
-			}
 
 			if (argv[1][1] == 'r')
 			{
-				filetype = 3;
+				filetype = FILETYPE_RBF;
 				fname = PROGRAMFILE_R;
 			}
 
@@ -811,7 +867,7 @@ int main (int argc, char **argv)
 			return 1;
 	}
 
-	if (filetype)
+	if (filetype != FILETYPE_NONE)
 	{
 		if (!fname)
 			DOABORT ("fname");
@@ -835,11 +891,11 @@ int main (int argc, char **argv)
 				respond("MX04Z");			// Set g_mode = 0x04 (silent)
 			else
 				respond("MX00Z");			// Set g_mode = 0x00 (normal) in case it was left set to debug mode
-			ret = init_fpga();
+			ret = init_fpga(&device_index);
 		}
 
 		if (!ret)
-			return (program_fpga(fname,filetype));
+			return (program_fpga(fname, filetype, device_index));
 
 		return ret;
 	}
@@ -888,7 +944,7 @@ int main (int argc, char **argv)
 			clientflushrx();
 			// NB ftdi_ok status is updated in jtagger()
 		}
-		ret = init_fpga();
+		ret = init_fpga(&device_index);
 		if (ret)
 		{
 			printf("jtagger exit with ERROR %d\n", ret);

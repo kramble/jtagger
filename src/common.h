@@ -13,6 +13,7 @@
 #include <signal.h>
 #include <time.h>
 #include <pwd.h>
+#include <byteswap.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/ipc.h>
@@ -25,7 +26,6 @@
 #define SOCKFILE "~/.jtag.socket"			// Just used as filename for ftok() (~ expands to $HOME)
 #define PROGRAMFILE_S "system.svf"
 #define PROGRAMFILE_R "system.rbf"
-#define PROGRAMFILE_X "analyze.out"	// see analyze.c (processes openFPGALoader custom logfile)
 
 // Status bit flags (pack into top 4 bits for access via clientflushrx)
 #define JSTA_ERROR 0x10
@@ -56,6 +56,10 @@
 #define JMSG_ERROR 'N'	// N for no (since E is hex)
 #define JMSG_INVALID 'I'	// I for invalid message
 
+#define FILETYPE_NONE 0
+#define FILETYPE_SVF 1
+#define FILETYPE_RBF 2
+
 #define MSGBUFLEN (16 + 2 * BUF_LEN)	// Allow space for command string plus hex-encoded write buffer
 
 struct jtag_msgbuf {
@@ -65,7 +69,10 @@ struct jtag_msgbuf {
 
 #define DOABORT(s) doabort(__func__, s)
 
-#define TOHEX(n) (((n) & 15) > 9 ? (((n)&15) -10 + 'a') : (((n)&15) + '0'))		// Convert low nibble to hex char
+#define TOHEX(n) (((n)&15) > 9 ? (((n)&15) - 10 + 'a') : (((n)&15) + '0'))		// Convert low nibble to hex char
+
+// UNHEX() is a bit inefficient due to the duplicated toupper() calls, but it's only used for debugging so no matter
+#define UNHEX(c) ((c) < '0' ? 0 : (c) <= '9' ? (c) - '0' : toupper(c) < 'A' ? 0 : toupper(c) > 'F' ? 0 : toupper(c) - 'A' + 10)
 
 extern int g_isserver;		// Set to 1 for server, 0 for client (allows common init routine)
 
@@ -98,6 +105,18 @@ extern int g_debug_log;		// Write responds to file
 // NB using global g_clientmsg so caller can access last message
 extern struct jtag_msgbuf g_clientmsg;		// See clientflushrx()
 
+#define DEVICE_PARAMS_MAXINDEX_CHIP_ID	0
+#define DEVICE_PARAMS_MAXINDEX_IR_LENGTH 1
+#define DEVICE_PARAMS_MAXINDEX_PREAMBLE 2
+#define DEVICE_PARAMS_MAXINDEX_POSTAMBLE 3
+#define DEVICE_PARAMS_MAXINDEX_CHECK_BITS 4
+#define DEVICE_PARAMS_MAXINDEX_STARTUP 5
+#define DEVICE_PARAMS_MAXINDEX 5
+
+// TODO add a command line option to read parameters from a configuration file (this is why device_params
+// is a pointer to the parameter array static_device_params in devices.c, so it can be overriden).
+extern unsigned int (*device_params)[DEVICE_PARAMS_MAXINDEX+1];		// See devices.c
+
 // Prototypes
 void doabort(const char *func, char *s);
 char *hexdump(uint8_t *buf, unsigned int size);
@@ -112,7 +131,7 @@ int tap_reset(void);
 int runtest5(void);
 int runtest(int n);
 int scan_dr_int(unsigned int val, int bits);
-int program_fpga(char *fname, int filetype);
+int program_fpga(char *fname, int filetype, int device_index);
 int serve_alone(char *msg);
 int client(void);
 int server(void);

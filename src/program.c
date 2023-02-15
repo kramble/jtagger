@@ -60,104 +60,145 @@ STATE IDLE;
 #define PROGERR_BYTES 108
 
 // This is the large static buffer shared by both filetype versions of the programmer
-// TODO allocate dynamically and resize as neccessary
+// TODO allocate dynamically and resize as neccessary (mmap looks handy)
 // #define HEXBUF (2 * 1024 * 1024)	// (Old value) sufficient for the De0-Nano Cyclone EP4CE22 FPGA
 #define HEXBUF (16 * 1024 * 1024)	// It's bss so no harm making this a lot bigger (in case someone has a HUGE fpga)
 static char buf[HEXBUF];			// Retain buffer from run==0 for run==magic call
 
-int g_lineno;	// Used in printerror() so global
-int g_databytes;
-unsigned int g_clocks;	// Reads value from "SDR 5748760 TDI"
+static int g_lineno;			// Used in printerror() so global
+static int g_databytes;
+static unsigned int g_clocks;	// Reads value from "SDR 5748760 TDI"
+
+// LAZY during debugging (TODO pass a struct around)
+static int g_device_index;		// index into device_params[]
+static int g_filetype;
+
+#if 0
+static void dump (char *buf, size_t n)	// DEBUG dump to file
+{
+	FILE *f = fopen("zdump.out", "wb");
+	if (!f)
+		DOABORT("write");
+	int raw = 0;	// NB raw in the sense of the incoming data, which may actually be "cooked" as hex
+	if (raw)
+		fwrite(buf, n, 1, f);		// In the case of SVF, this actually dumps hex data
+	else
+	{
+		// convert hex to binary
+		char *p = buf;
+		while (p < buf+n)
+		{
+			unsigned char b, c = 0;
+			b = *p++;	// BEWARE do not use UNHEX() directly on p++ (else ++ will happen 6 times)
+			c = UNHEX(b);
+			b = *p++;
+			c = c<<4 | UNHEX(b);
+			putc(c, f);
+		}
+	}
+	fclose(f);
+}
+#endif
 
 static int begin_programming()
 {
-	// Perform initial steps
+	// Perform initial steps. Originally based on an SFV file, but now just following openFPGALoader sequences
 
 	// TODO fix this mess (it's basically just cribbed from a dumped FTDI parameters log of an
 	// openFPGALoader session). Do it programatically instead.
 
+	// ALSO if I'm to continue supporting SVF, fully parse the file and queue the correct actions (retain
+	// the current sequence for RBF only).
+
 	// Enter STATE IDLE
+	// init_fpga() leaves us in tap_reset, so just do runtest(5)
 
-	// tap_reset();	// io_check() hangs when g_spoofprog so just use respond
-	// respond("WX2e2f2e2f2e2f2e2f2e2f2e2eZ");
-
-	// runtest5();
-	// respond("WX2c2d2c2d2c2d2c2d2c2d2cZ");
+	runtest5();	// Not actually needed - it works fine without it, I suspect because the next string starts 
+				// 3e3f3e3f3e3f3e3f3e3f3e3f which is tap_reset (with TDI=1 cf TDI=0 in my version)
 
 	// openFPGALoader (log file analysis) does this ...
-	// It looks like some checks (readback IR), then IRSCAN 0x2 PROGRAM (see the "8102" substring)
+	// It looks like tap reset then some checks (readback IR perhaps), then IRSCAN 0x2 PROGRAM (see the "8102" substring)
 	respond("WX3e3f3e3f3e3f3e3f3e3f3e3f2e3c3d3e3f3c3d3c3d2c2cc4ffffffff2cc4ffffffff2cc4ffffffff2cc4ffffffff2cc3ffffff"
 			"3c7d3c7d3c7d3c7d3c7d3c7d3c7d3e7f3e3e3f3e3f3e3f3e3f3e3f3e3f2e3e3f3e3f3e3f3e3f3e3f3e3f2e3c3d2c3e3f3e3f"
 			"3c3d3c3d2c2c81022c2d2e2f2e3c3d2c3e3f3e3f3c3d2c2cZ");
 
-	// SIR 10 TDI (002);	... IRSCAN 0x2 PROGRAM
-
-	// respond("WX3e3f3e3f3c3d3c3d2c2c81022c2d2e2f2e3c3d2c3e3f3e3f3c3d2c2cZ");	// IRSHIFT 0x02
+	// SIR 10 TDI (002);	... IRSCAN 0x2 PROGRAM (incuded in the above string)
 
 	// RUNTEST IDLE 24000 TCK ENDSTATE IDLE;
-	runtest(24000);
+	if (g_filetype == FILETYPE_SVF)	// RBF does not need it (neither does SVF but it wants it!)
+		runtest(24000);
 
-	// openFPGALoader (log file analysis) does ... ignoring the 3's which are TDI, it's not tap_reset or runtest(5)
-	// perhaps just a move from IRSCAN to RUN/REST?
-	respond("WX2c3e3f3c3d3c3d2c2cZ");
+	// SDR 5748760 TDI (....)
+	respond("WX2c3e3f3c3d3c3d2c2cZ");	// TMS 1,0,0 (TDI=1 then 0) Move from IDLE to SHIFTDR for the bulk data load
 
 	return 0;
 }
 
 static int finish_programming()
 {
+
+#if 0	// We do not actually need to do CHECK_STATUS. DE0-Nano initializes OK without it.
+
 	// SIR 10 TDI (004);	... IRSCAN 0x4 CHECK_STATUS
 	// RUNTEST 120 TCK;
-	// SDR 732 TDI (...)	... NB this is chip-specific (see note at top, jrunner has all the values)
-	//							TODO if programming a .rbf we need check the device ID against the table from jrunner
+	// SDR 732 TDI (...)	... NB this is chip-specific for EP4CE22 (see note at top, Jrunner/jb_device.h has the values)
 
-	// openFPGALoader... IRSCAN 0x4 CHECK_STATUS (see the "8104" substring)
+	// openFPGALoader (log file analysis) has the following ... IRSCAN 0x4 CHECK_STATUS (see the "8104" substring)
 	respond("WX2c2d2c2d2c2d2c2d2c2d2c2d2c2d2e2f2e3e3f3c3d2c3e3f3e3f3c3d3c3d2c2c81042c2d2e2f2e3c3d2c3e3f3e3f3c3d2c2cZ");
-	respond("WX8f000000000000000000000000000000Z");
-	respond("WX2c3e3f3c3d3c3d2c2cZ");
+	respond("WX8f000000000000000000000000000000Z");		// Scan 15 bytes / 120 bits - actually is runtest(60)
+	
+	// TODO Rework this to use the check_bit value from devices.c instead of this which seems arbitary
+
+	respond("WX2c3e3f3c3d3c3d2c2cZ"); // TMS 1,0,0 ie RUNTEST -> SHIFTDR
+
+	// The following reads 91 bytes / 728 bits, which is not a multiple of 3, approx 243 in jb_device.h terms.
+	// However looking at openFPGALoader/src/altera.cpp ...
+	// _jtag->shiftDR(tx, rx, 864, Jtag::RUN_TEST_IDLE); ... why does this not match (728 cf 864)
+	// Possibly I'm reading the wrong function as that is in "void Altera::programMem(RawParser &_bit)", perhaps
+	// the scan is generated by some other function? TODO chase this up (trap and generate a backtrace).
+	// NB The 864 value matches 288 * 3 = 864 for several Cyclone V devices in Jrunner jb_device.c
 
 	respond("WXff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 			"00000000000000000000000000000dc00000000000000000000000000000000000000000000000000000000Z");
 
+	// Am I missing a subsequent bitbang sequence? Yes 3 bits from the STARTUP string below, giving 244 which matches
+	// the smaller CYCLONE III devices.
+
+	// SIR 10 TDI (003);	... IRSCAN 0x3 STARTUP (see the "8103" substring)
 	respond("WX2c6d2c6d2c6d2e6f2e3e3f3c3d2c3e3f3e3f3c3d3c3d2c2c81032c2d2e2f2e3c3d2c3e3f3e3f3c3d2c2cZ");
 
-	// SIR 10 TDI (003);	... IRSCAN 0x3 STARTUP
-#if 0
-	respond("WX2e2f2e2f2c2d2c2d2c81032c2d2e2f2e2e2c2d2cZ");	// IRSHIFT 0x03
-	// need to get to IDLE, so whatever is needed, maybe...
-	respond("WX2e2e2f2c2d2cZ");	// from DRSHIFT to RUNIDLE (should work for IRSHIFT)
+#else
+
+	// For now I'll just go straight to IRSCAN 0x3 STARTUP instead. Either of the following work for both SVF and RBF,
+	// so I'll use the RBF one since I'm depreciating SVF.
+
+	// With 0's to finish SHIFTDR (matching the final SVF byte)
+	// respond("WX2c2d2c2d2c2d2c2d2c2d2c2d2c2d2e2f2e3e3f3c3d2c3e3f3e3f3c3d3c3d2c2c81032c2d2e2f2e3c3d2c3e3f3e3f3c3d2c2cZ");
+
+	// With 1's to finish SHIFTDR (more appropriate for RBF)
+	respond("WX3c3d3c3d3c3d3c3d3c3d3c3d3c3d3e3f3e3e3f3c3d2c3e3f3e3f3c3d3c3d2c2c81032c2d2e2f2e3c3d2c3e3f3e3f3c3d2c2cZ");
+
 #endif
 
-	// Note that the chip initialises significantly BEFORE the end of the programming sequence, this is
-	// because the sequence ends with a long "RUNTEST 120000 TCK", before setting IR BYPASS mode.
-	// The Cyclone V handbook suggests a much smaller value ... "After the configuration data is transmitted serially
-	// using the JTAG TDI port, the TCK port is clocked an additional 1,222 cycles to perform device initialization."
-	// However the DE0-Nano has a Cyclone IV part which may be different. Jrunner has INIT_COUNT 200, but that seems
-	// way too short since runtest(1200) failed above. TODO rig up a test harness for jrunner and revese engineer it.
+#if 1
+	int startup_clocks = 120000;	// This is the value from the Quartus 10.0 SVF file, it's plenty too much
+	startup_clocks = device_params[g_device_index][DEVICE_PARAMS_MAXINDEX_STARTUP];
+	// printf("runtest %d\n", startup_clocks);
+	if (startup_clocks > 0)			// Sanitise!
+		runtest(startup_clocks);
+#endif
 
-	// TEST shorter startup (note the early return, this bypasses the final BYPASS so we really don't want that
-	// in the final version).
+	// NOTE Any of the following is needed to finish (unless a large number >= 3176 of startup_clocks are applied above)
+	//      Also subsequently running jtagger without programming will initialise the fpga (inspired by tap_reset)
 
-	// runtest(1200);		// NO, NOT programmed
-	// runtest(6000);		// YES, programmed
-	// return 0;	
+	if (1)
+		respond("WX2c3e3f3e3f3c3d3c3d2c2c81ff3c3d3e3f3e3c3d2c3e3f3e3f3c3d2c2cZ");	// sets BYPASS IRSHIFT 0x3ff
 
-	runtest(120000);	// This is the value from the Quartus 10.0 SVF file
+	if (0)	// But this also works INSTEAD (must be >= 3176 if no runtest(startup_clocks) have been applied)
+		runtest(3176);
 
-	// So we could reduce this (as tested above), but it's so ridiculously fast anyway that I won't risk it
-
-	respond("WX2c2cZ");
-
-	runtest(512);
-
-//	respond("WX2e2f2e2f2c2d2c2d2c81ff3c3d3e3f3e3e3c3d2cZ");	// IRSHIFT 0x3ff (unsure about top bits 3c3d etc)
-//	respond("WX2e2e2f2c2d2cZ");	// from DRSHIFT to RUNIDLE (should work for IRSHIFT)
-
-	// openFPGALoader
-	respond("WX2c3e3f3e3f3c3d3c3d2c2c81ff3c3d3e3f3e3c3d2c3e3f3e3f3c3d2c2cZ");	// sets BYPASS IRSHIFT 0x3ff
-
-	runtest(24000);
-	respond("WX2cZ");	// openFPGALoader has this, but I guess it's superfluous
+	if (0)	// This works too
+		tap_reset();
 
 	return 0;
 }
@@ -175,54 +216,104 @@ static int push_data(char *token)
 	static char *pend = buf;	// BUT here in push_data() we want this.
 	static char *p = buf;
 
-	char ch;
-	if (1)	// TODO remove and un-indent
+	char ch = 0;
+	int nibble = 0;	// HACK to swap hex chars (see reverse further down)
+
+	while ((ch = *token++))	// assignment, and test > NULL (gcc wants double brackets here -Wparentheses)
 	{
-		int nibble = 0;	// HACK to swap hex chars (see reverse further down)
-		while ((ch = *token++))	// assignment, and test > NULL (gcc wants double brackets here -Wparentheses)
+		if (ch == '(')	// First char is a bracket
+			continue;
+
+		if (ch == ')')	// End of data
+			break;
+
+		if (!isxdigit(ch))
 		{
-			if (ch == '(')	// First char is a bracket
-				continue;
-
-			if (ch == ')')	// End of data
-				break;
-
-			if (!isxdigit(ch))
-			{
-				printf("push_data bad char 0x%02x '%c'\n", ch, ch);
-				return ch;		// ERROR
-			}
-
-			ch = tolower(ch);	// DEBUG so we can compare debuglog.out with -p and -x
-
-			g_databytes++;
-
-			pend = p;
-			if (pend - buf >= sizeof(buf) - 1024)
-			{
-				printf("buffer overflow g_lineno %d buf %p p %p\n", g_lineno, buf, p);
-				doabort(func, "buffer overflow, TODO increase HEXBUF");
-			}
-
-			// HACK to swap hex chars (see reverse further down)
-			if (nibble++ & 1)
-			{
-				*p = *(p-1);
-				*(p-1) = ch;
-				*++p = 0;
-			}
-			else
-			{
-				*p++ = ch;
-				*p = 0;
-			}
-			pend++;
+			printf("push_data bad char 0x%02x '%c'\n", ch, ch);
+			return ch;		// ERROR
 		}
 
-		return ch;
+		ch = tolower(ch);	// DEBUG so we can compare debuglog.out with -p and -x
+
+		g_databytes++;
+
+		pend = p;
+		if (pend - buf >= sizeof(buf) - 1024)
+		{
+			printf("buffer overflow g_lineno %d buf %p p %p\n", g_lineno, buf, p);
+			doabort(func, "buffer overflow, TODO increase HEXBUF");
+		}
+
+		// HACK to swap hex chars (see reverse further down)
+		if (nibble++ & 1)
+		{
+			*p = *(p-1);
+			*(p-1) = ch;
+			*++p = 0;
+		}
+		else
+		{
+			*p++ = ch;
+			*p = 0;
+		}
+		pend++;
 	}
 
-	return 0;	// yeah, could happen, if token was empty string
+	return ch;
+}
+
+static void send_residual(char *packbuf, char *dst)
+{
+	int debug = 0;
+	int lastlen = 0;
+
+	if (dst > packbuf+2)	// Check for residual data (ie packbuf contains more than "WX")
+	{
+		if (debug)
+			printf("dst %p *dst=%d packbuf %p ...\n%s\n", dst, *dst, packbuf, packbuf);	// *dst should (now) be NULL
+
+		// TESTED by changing postamble in devices.c - use parameters preamble=3192, postamble=401 for max
+		// packet "bff..ffZ", then postamble=409 for rollover "81ffZ"
+
+		int numpackets = (dst - packbuf - 2) / 128;		// 128 for (header byte + 63 bytes data) * 2 for hex
+		char* last = packbuf + numpackets * 128 + 2;	// The -2 above / + 2 here allows for "WX"
+
+		if (debug)
+		{
+			lastlen = dst - last;	// DEBUG
+			printf("numpackets = %d packbuf = %p last = %p lastlen = %d\n", 
+				numpackets, packbuf, last, lastlen);
+			printf("packlen = %ld lastoffset = %ld\n", dst - packbuf, last - packbuf);
+		}
+
+		if (last < dst)
+		{
+			// update header for last packet
+			unsigned char header = 0x80 | ((dst - last) / 2 - 1);	// -1 allows for the header byte itself
+			if (header > 0xbf)	// max byte packet
+				DOABORT("header > 0xbf");
+			*last = TOHEX(header>>4);
+			*(last+1) = TOHEX(header);
+		}
+		else if (last == dst)
+		{
+			// Last packet was already complete (seen with preamble=3192, postamble=401), this is OK
+			if (debug)
+				printf("INFO last == dst\n");
+		}
+		else
+			// DOABORT("last > dst");						// This should not happen
+			printf("%s: ERROR last > dst\n", __func__);		// But don't abort (programming may succeed anyway)
+
+		// Write residual
+		*dst++ = 'Z';
+		*dst = 0;
+
+		if (debug)
+			puts(packbuf);
+
+		respond(packbuf);
+	}
 }
 
 static int send_data(void)
@@ -251,17 +342,21 @@ static int send_data(void)
 	*packbuf = 0;			// Set as empty
 
 	int count = 0;
-	// int lastlen = 0;	// DEBUG
 
 	// TODO run the loop backwards, but for now just reverse the buffer (a bit inefficient)
 	reverse(buf);	// NB relies on hex byte swap above as we need to pre-swap so as to undo the reverse's swap
-	// printf("buflen %ld expect %d g_databytes %d\n", buflen, TDIbits/4, g_databytes);
+
+	// dump (buf, strlen(buf));	// DEBUG dump the reversed buffer to a file for comparison with system.rbf
+
+#if 0	// REINSTATED the last byte (See note in finish_programming(), as I now append 0xFF)
 
 	// puts(buf+buflen-16);	// DEBUG last 16 char to see what's there (last byte's zero, so nice)
 	if (strcmp(buf+buflen-2, "00"))			// Check it because finish_programming() relies on this
 		doabort(func,"last byte not 00");	// BEWARE some svf's may break, forward value to bitbang
 
 	buf[buflen-2] = 0;	// Shorten by two as last byte needs to be bitbanged in finish_programming()
+
+#endif
 
 	seq = (buflen * 105) / (BUF_LEN * 100);	// approximate since buffer is not filled completely (and ignores WXZ)
 
@@ -314,34 +409,7 @@ static int send_data(void)
 
 	// printf("count = %d * sizeof(packbuf) = %ld \n", count, count * sizeof(packbuf));
 
-	if (dst > packbuf+2)
-	{
-		int numpackets = (dst - packbuf - 2) / 64;
-		char* last = packbuf + numpackets * 64 + 2;
-		// lastlen = dst - last;	// DEBUG
-		// printf("numpackets = %d packbuf = %p last = %p lastlen = %d\n", 
-		//	numpackets, packbuf, last, lastlen);
-		// printf("packlen = %ld lastoffset = %ld\n", dst - packbuf, last - packbuf);
-
-		if (last != dst)	// TODO CHECK and TEST (simulate case) - works for DE0-NANO but general case needs checking
-		{
-			// update header for last packet
-			unsigned char header = 0x80 | ((dst - last) / 2 - 1);	// WHY -1 ?
-			if (header > 0xff)
-				doabort(func,"header");
-			char tmp[3];	// TODO use TOHEX()
-			sprintf(tmp, "%02x", header);
-			// printf("tmp [%s]\n", tmp);
-			*last = tmp[0];
-			*(last+1) = tmp[1];
-		}
-
-		// Write residual
-		*dst++ = 'Z';
-		*dst = 0;
-
-		respond(packbuf);
-	}
+	send_residual(packbuf, dst);
 
 	// printf("sent %d FDTI write packets (expected approx %d last len %d)\n", count, seq, lastlen);
 
@@ -362,25 +430,52 @@ static int parse_rbf(FILE *f, int run)
 
 	if (run == 0)
 	{
-		size_t expected = 718569;	// That's specific to EP4CE22
+		// size_t expected = 718569;	// That's specific to EP4CE22
 		size_t len = fread(p, 1, sizeof(buf), f);
 		if (len == sizeof(buf))
-			doabort(__func__, "buffer overflow, TODO increase HEXBUF");
-		if (len != expected)
-			printf("WARNING read %ld bytes expected %ld bytes for DE0-NANO\n", len, expected);
-		else
+			DOABORT("buffer overflow, TODO increase HEXBUF");
+		// if (len != expected)
+		//	printf("WARNING read %ld bytes expected %ld bytes for DE0-NANO\n", len, expected);
+		// else
 			printf("loaded %ld bytes\n", len);
 		pend = p + len;
+
+		// dump (buf, pend-buf);
+
 		return 0;
 	}
 	else if (run != magic)
-		doabort(__func__, "invalid run");
+		DOABORT("invalid run");
 
-	// Program ... TODO merge with send_data() which is very similar
+	// Program ...
 
 	begin_programming();
 
 	seq = ((pend - buf) * 210) / (BUF_LEN * 100);	// approximate since buffer is not filled completely (and ignores WXZ)
+
+	// BEWARE unlike SVF we're NOT reserving the last byte for bitbang (I guess I forgot), but it's FF in the RBF
+	// so is subsumed into the postamble (though the bitbang is still 00). However SVF does end on 00 (actually the first
+	// few chars of the "SDR 5748760 TDI (00000000FFFFF" since it's reversed). The RBF has a longer sequence of FF's
+	// so it seems those 00's are superfluous. BUT I noted this above ... the rbf is slightly smaller at 718569 bytes than
+	// the svf at 718595 bytes (TDI 5748760 bits) ... DONE a full comparison of SVF vs RBF (did I not do this before?)
+	// CONCLUDE after reversing, the SVF has an additional 22 0xff byte preamble (54 bytes, cf 32 in the RBF).
+	// Additionally the SVF has a 4 byte postamble of 0x00. That totals 26 bytes, matching the size difference.
+	// Also there are a few differences in the first 42 bytes following the 0xff preamble. None of this seems to affect
+	// the successful loading of the bitstream (on this particular example, TODO try a more complex bitstream).
+/*
+$ diff z22+rbf.hd zsvfdump.hd
+3,6c3,6
+< 00000030  ff ff ff ff ff ff 6a f7  f7 f7 f7 f7 f7 f3 fb f3  |......j.........|
+< 00000040  f9 fb f1 f1 f9 f9 fd f9  f9 fb fb fb fd f9 ff ff  |................|
+< 00000050  ff fb fd fd f9 fd fd fd  fd f9 ff fb ff fb fb 58  |...............X|
+< 00000060  11 ff ff ff ff ff ff ff  ff ff ff ff ff ff ff ff  |................|
+---
+> 00000030  ff ff ff ff ff ff 6a f7  f7 f7 f7 f7 f7 f3 fb fb  |......j.........|
+> 00000040  f9 fb f1 f1 f9 f9 f9 f9  f9 fb fb fb f9 f9 fb fb  |................|
+> 00000050  fb fb f9 f9 f9 f9 f9 f9  f9 f9 fb fb fb fb fb c4  |................|
+> 00000060  09 ff ff ff ff ff ff ff  ff ff ff ff ff ff ff ff  |................|
+13848,13849c13848,13850
+*/
 
 	// Construct 63 byte packets and fill 4096 byte buffer up to the brim
 
@@ -388,14 +483,35 @@ static int parse_rbf(FILE *f, int run)
 	*packbuf = 0;			// Set as empty
 
 	int count = 0;
-	// int lastlen = 0;	// DEBUG
+
+	int preamble = 0, postamble = 0;
+	if (g_device_index != -1)
+	{
+		preamble = device_params[g_device_index][DEVICE_PARAMS_MAXINDEX_PREAMBLE];
+		postamble = device_params[g_device_index][DEVICE_PARAMS_MAXINDEX_POSTAMBLE];
+
+		if (preamble < 0) preamble = 0;		// Sanitise!
+		if (postamble < 0) postamble = 0;
+
+		// TODO bitbang any surplus bits (preamble before, postamble after), but for now just round up
+
+		// printf("initial preamble %d postamble %d\n", preamble, postamble);
+		preamble = (preamble + 7) & ~7;
+		postamble = (postamble + 7) & ~7;
+		// printf("rounded preamble %d postamble %d\n", preamble, postamble);
+		preamble /= 8; postamble /= 8; 
+		// printf("bytes   preamble %d postamble %d\n", preamble, postamble);
+
+	}
+
+	int total_bytecount = 0;	// DEBUG total bytes sent (excludes header bytes, WXZ)
 
 	char *dst = packbuf;
 	strcpy(dst, "WX");
 	dst += 2;
 
 	int byte = 0;
-	while (p < pend)
+	while (p < pend + postamble)
 	{
 		if (byte == 0)
 		{
@@ -404,11 +520,29 @@ static int parse_rbf(FILE *f, int run)
 			*dst++ = 'f';
 		}
 
-		unsigned char ch = *p++;
+		unsigned char ch;
+
+		// BEWARE, this is bit tricksy.
+		// Once in postamble, p no longer increments in the else part, so we need to increment it
+		// in the first, so we test preamble to do this (and ensure it does not decrement)
+		// NB p ends up at pend+postamble, well beyond the end of valid data
+
+		if (preamble || p >= pend)
+		{
+			ch = 0xff;
+			if (preamble)
+				preamble--;
+			else
+				p++;
+		}
+		else
+			ch  = *p++;
 
 		// Two hex chars (bytes)
 		*dst++ = TOHEX(ch>>4);
 		*dst++ = TOHEX(ch);
+		*dst = 0;	// Not necessary but makes debugging easier since can see end of data when printing buffer
+		total_bytecount++;
 
 		if (++byte > 62)
 		{
@@ -426,6 +560,7 @@ static int parse_rbf(FILE *f, int run)
 				dst = packbuf;
 				strcpy(dst, "WX");
 				dst += 2;
+				*dst = 0;	// Again, not necessary
 
 				if (++count % 50 == 0)
 					printf("FTDI packets (of approx %d) sent %d\n", seq, count);
@@ -435,207 +570,13 @@ static int parse_rbf(FILE *f, int run)
 
 	// printf("count = %d * sizeof(packbuf) = %ld \n", count, count * sizeof(packbuf));
 
-	if (dst > packbuf+2)
-	{
-		int numpackets = (dst - packbuf - 2) / 64;
-		char* last = packbuf + numpackets * 64 + 2;
-		// lastlen = dst - last;	// DEBUG
-		// printf("numpackets = %d packbuf = %p last = %p lastlen = %d\n", 
-		//	numpackets, packbuf, last, lastlen);
-		// printf("packlen = %ld lastoffset = %ld\n", dst - packbuf, last - packbuf);
+	send_residual(packbuf, dst);
 
-		if (last != dst)	// TODO CHECK and TEST (simulate case) - works for DE0-NANO but general case needs checking
-		{
-			// update header for last packet
-			unsigned char header = 0x80 | ((dst - last) / 2 - 1);	// WHY -1 ?
-			if (header > 0xff)
-				doabort(__func__,"header");
-			char tmp[3];	// TODO use TOHEX()
-			sprintf(tmp, "%02x", header);
-			// printf("tmp [%s]\n", tmp);
-			*last = tmp[0];
-			*(last+1) = tmp[1];
-		}
-
-		// Write residual
-		*dst++ = 'Z';
-		*dst = 0;
-
-		// puts(packbuf);
-		respond(packbuf);
-	}
+	printf("total bytecount %d\n", total_bytecount);	// Includes preamble/postamble
 
 	// printf("sent %d FDTI write packets (expected approx %d last len %d)\n", count, seq, lastlen);
 
 	finish_programming();
-
-	return 0;
-}
-		
-static int parse_openFPGALoader_analysis(FILE *f, int run)
-{
-/*	NB this is a debug function (called via the undocumented -x switch), which reads a dump from
-	a (custom) OpenFPGALoader session, format...
-    0 len   23 3e 3f 3e 3f 3e 3f 3e 3f 3e 3f 3e 3f 2e 3c 3d 3e 3f 3c 3d 3c 3d 2c 2c
-    1 len    5 c4 ff ff ff ff
-    2 len    1 2c
-    3 len    5 c4 ff ff ff ff
-    etc. This is a complete dump of all the FTDI write data, so was very useful for testing (it
-    successfuly programs the DE0-Nano), but is now superceeded by -r for a standard rbf file.
-*/
-
-	const char *func = __func__;	// for doabort
-
-	// Keep the magic incantation local to parse(), make the caller remember it separately
-	unsigned int magic = 0xF00FB175;	// Foofbits (!!)
-
-	// static char buf[HEXBUF];		// This is now a global, so it can be shared with svf loader
-	static char *pend = buf + sizeof(buf) - 1024;	// -1024 for safety margin
-	char *dst = buf;
-	char *p = buf;
-	static int seq;					// Retain count
-
-	if (run == 0)
-	{
-		// Read text file format: sequenceno "len" length hexstring
-		for (int i=0 ; /*none*/ ; i++ )
-		{
-			int remain = pend - p;
-			if (remain < 1024)
-			{
-				printf("buffer overflow i %d buf %p p %p\n", i, buf, p);
-				doabort(func, "buffer overflow, TODO increase HEXBUF");
-			}
-			if (!fgets(p, remain, f))
-				break;	// Done
-
-			// Skip the first 5 lines (these are info) - BEWARE if change analyse.c
-			if (i < 5)
-				continue;
-
-			int len;
-			if (sscanf(p, "%d len %d", &seq, &len) != 2)
-			{
-				printf("scan error line %d\n", i);
-				doabort(func, "scan");
-			}
-
-			if (seq != i-5 || len < 1 || len > remain)	// len > remain is just an approximate check
-			{
-				printf("bad scan input line %d seq %d len %d\n", i, seq, len);
-				doabort(func, "scan");
-			}
-
-			// Move the hex string
-			char *dst0 = dst;	// DEBUG
-			p += 15;			// Skip to first hex (assumes fixed length fields, see analyze.c)
-			int count = 0;
-			unsigned char c;
-			while ((c = *p++))
-			{
-				if (isspace(c))
-					continue;
-				if (!isxdigit(c))
-				{
-					printf("line %d char %d expected hex got %02x (%c)\n", i, count, c, c);
-					doabort(func, "scan");			
-				}
-				*dst++ = c;
-				count++;		// Only counts hex chars moved
-			}
-
-			*dst++ = 0;			// Add string terminator for each hex segment
-			*dst = 0;			// Add second terminator for entire buffer (to terminate magic pass below)
-			
-			p = dst;			// Append next fget() after dst instead of after last fget() input (saves space)
-
-			if (count != len*2)
-			{
-				printf("expected count %d got %d [%s]\n", len, count, dst0);
-				doabort(func, "scan");			
-			}
-		}
-
-		pend = p;
-		printf("loaded sequences %d bytes %ld\n", seq, (pend-buf)/2);
-		// printf("loaded seq %d buf %p pend %p total %ld\n", seq, buf, pend, pend-buf);
-
-		if (seq != 11793)	// NB this is debugging (-x file, EP4CE22), so keep this as an error
-			doabort(func, "bad seq count");
-
-		return 0;
-	}
-	else if (run != magic)
-		doabort(func, "invalid run");
-
-	// Program ...
-
-	int packmode = 1;	// CONFIGURE .. this WORKS so use it always
-
-	size_t len = pend - buf;
-	if (len != 1503556 + seq + 1)	// Allow for all the nulls added as string terminators
-		doabort(func, "bad len (total hex chars)");	//  Again just for -x, see above
-
-	// Pack multiple FTDI writes into max size message ... see packmode above
-	char packbuf[BUF_LEN];	// NB BUF_LEN is message buffer
-	*packbuf = 0;			// Set as empty
-
-	char s[BUF_LEN];
-	int count = 0;
-	// int lastlen = 0;	// DEBUG
-
-	while (*p)
-	{
-		// printf("buf [%s] *p %02x *(p+1) %02x\n", s, *p, *(p+1));
-		int slen = strlen(p);
-		// lastlen = slen;	// DEBUG
-		if(slen >= sizeof(s) - 8)	// Allow for WX(*)Z plus a bit of margin
-			doabort(func, "respond buffer overflow");
-
-		char *dst = s;
-		strcpy(dst, "WX");
-		dst += 2;
-		strcpy(dst, p);
-		dst += slen;
-		*dst++ = 'Z';
-		*dst = 0;
-		p += strlen(p) + 1;
-		count++;
-
-		if (packmode)
-		{
-			size_t pblen = strlen(packbuf);
-			if (pblen + strlen(s) > sizeof(packbuf) - 4)
-			{
-				respond(packbuf);
-				strcpy(packbuf,s);	// Clear packbuf and copy s
-			}
-			else
-			{
-				if (!pblen)
-				{
-					static int n;	// check it only runs once
-					if (++n > 1)
-						doabort(func,"pblen");
-					strcpy(packbuf, s);		// First time only
-				}
-				else
-					strcpy(packbuf+pblen-1, s+2);	// Overwrite the Z, omitting WX in s
-			}
-		}
-		else
-			respond(s);
-
-		if (count % 1000 == 0)
-			printf("FTDI packets (of %d) sent %d\n", seq, count);
-	}
-
-	if (*packbuf)			// Flush buffer (won't happen if !packbuf so no need to test)
-		respond(packbuf);
-
-	// printf("sent %d FDTI write packets (expected %d last len %d)\n", count, seq, lastlen);
-	if (count != seq + 1)
-		doabort(func, "count did not match seq");
 
 	return 0;
 }
@@ -646,11 +587,10 @@ static int parse (FILE *f, int run, int filetype)
 	// If run is set, do programming (usage is first call with run=0, reset file then with run=1)
 	const char *func = "program fpga: parse";	// for doabort
 
-	if (filetype < 1 || filetype > 3)
-		doabort(func, "program fpga: unsupported filetype");
-
 	if (!f)
 		return 1;
+
+	g_filetype = filetype;	// LAZY
 
 //	g_silent = 0;		// DEBUG turn OFF silent in client
 //	respond("MX03Z");	// DEBUG turn OFF silent in server (keep spoofing - DEBUG ONLY)
@@ -670,14 +610,12 @@ static int parse (FILE *f, int run, int filetype)
 	else if (run)
 		doabort(func, "wrong magic, no programming for you");
 
-	if (filetype == 2)
-		return parse_openFPGALoader_analysis(f, run);
-	else if (filetype == 3)
+	if (filetype == FILETYPE_RBF)
 		return parse_rbf(f, run);
-	else if (filetype != 1)
+	else if (filetype != FILETYPE_SVF)
 		doabort(func, "filetype not implemented");
 
-	// filetype 1 ... svf
+	// FILETYPE_SVF
 
 	if (run == magic)
 	{
@@ -888,7 +826,7 @@ void printerror(int err)
 	printf("\n");
 }
 
-int program_fpga(char *fname, int filetype)
+int program_fpga(char *fname, int filetype, int device_index)
 {
 	printf("PROGRAM FPGA ... reading %s\n", fname);
 	FILE *f = fopen(fname, "rb");
@@ -898,6 +836,8 @@ int program_fpga(char *fname, int filetype)
 		return 1;
 	}
 
+	g_device_index = device_index;	// Lazy
+	
 	int ret = parse(f, 0, filetype);
 	if (!ret)
 	{

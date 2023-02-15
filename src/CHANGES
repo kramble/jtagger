@@ -12,6 +12,15 @@ Downgraded some errors to warnings so it should now work with FPGAs other than
 the EP4CE22 (ie not just the DE0-Nano). Probably still only the Altera/Intel
 Cyclone family, but YMMV.
 
+2023-02-15 Insights from Jrunner
+Jrunner was Altera's reference code for non-quartus hosted JTAG programming,
+see program.c for commentary. I took onboard some insights and added several
+configuration parameters in devices.c (these are only populated for the
+DE0-Nano EP4CE22, refer to the Jrunner source for values appropriate to other
+devices). Also stripped out older debug code (-x mode) and fixed a couple of
+edge-case bugs in data handling. Still got plenty of tidying up to do, but it
+seems good enough for now, and I want to move on to the verilog side.
+
 NEWS
 Looking ahead ... building a more functional verilog demo, still pretty basic
 but the eventual aim is to communicate with a soft-core CPU (I've successfully
