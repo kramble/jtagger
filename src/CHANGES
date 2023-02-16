@@ -13,6 +13,7 @@ the EP4CE22 (ie not just the DE0-Nano). Probably still only the Altera/Intel
 Cyclone family, but YMMV.
 
 2023-02-15 Insights from Jrunner
+
 Jrunner was Altera's reference code for non-quartus hosted JTAG programming,
 see program.c for commentary. I took onboard some insights and added several
 configuration parameters in devices.c (these are only populated for the
@@ -21,6 +22,17 @@ devices). Also stripped out older debug code (-x mode) and fixed a couple of
 edge-case bugs in data handling. Still got plenty of tidying up to do, but it
 seems good enough for now, and I want to move on to the verilog side.
 
+2023-02-16 Porting raspi and win32
+
+Added support for compilation on raspberry pi (a very old original pi, running
+raspbian jessie), via CFLAGS = -std=gnu99 (not c99 which still has warnings)
+It works fine ;-)
+
+Windows was a nightmare. I have an oldish MinGW-32 on Windows 10 that I used
+for testing. Jtagger source needed some minor changes but building libftdi
+from source is not at all straightforward. So I cheated and downloaded a
+prebuilt version. It works, see README_Win32.txt for details.
+ 
 NEWS
 Looking ahead ... building a more functional verilog demo, still pretty basic
 but the eventual aim is to communicate with a soft-core CPU (I've successfully
@@ -28,11 +40,3 @@ used the OpenCores Amber ARM2-compatible CPU in previous projects). This very
 likely duplicates other existing jtag uart-based code (and yes, OpenOCD), but
 the objective here is to avoid dependancy on Quartus and to KISS.
 
-Also a Windows port looks quite promising. It compiles on cygwin (which I was
-surprised to find is included with Quartus 10.1, who knew?) That uses a very
-old version of gcc but adding CFLAGS -std=c99 fixes most of the issues).
-HOWEVER it compiles only after commenting out the FTDI calls. The SYSTEM V
-messaging headers are present but that does not actually work on cygwin (this
-is no great loss as it's not needed for standalone). So I just need to get
-libftdi working on windows (it seems that it is supported according to some
-quick googling). SIGH, I was getting quite used to Linux Mint, bah Windows :-(

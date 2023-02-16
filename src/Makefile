@@ -1,6 +1,7 @@
 CC = gcc
-CFLAGS = -Wall
+CFLAGS = -std=gnu99 -Wall
 LIBS = -lftdi
+# LIBS = -lftdi1	# Windows MinGW may need this version instead
 
 USERCODE = usercode.o
 

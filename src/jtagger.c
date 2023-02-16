@@ -301,10 +301,10 @@ static void ublast_initial_wipeout(void)
 	// Send it twice (see note above) ... NB ublast_buf_write() calls respond() so sequence prefix is applied
 	ublast_buf_write(info.buf, bytes_to_send, &retlen);
 	if (!g_standalone)
-		usleep(100 * MILLISECONDS);	// allow time for the FTDI I/O operation
+		JTAGGER_SLEEP(100 * MILLISECONDS);	// allow time for the FTDI I/O operation
 	ublast_buf_write(info.buf, bytes_to_send, &retlen);
 	if (!g_standalone)
-		usleep(100 * MILLISECONDS);
+		JTAGGER_SLEEP(100 * MILLISECONDS);
 
 	/*
 	 * Put JTAG in RESET state (five 1 on TMS)
@@ -314,7 +314,7 @@ static void ublast_initial_wipeout(void)
 
 	ublast_flush_buffer();	// MJ added this to write the TAP_RESET
 
-	usleep(100 * MILLISECONDS);
+	JTAGGER_SLEEP(100 * MILLISECONDS);
 
 	// After physically connecting the USB device cable, the first attempt to access the device
 	// returns the device ID mis-aligned. Flushing the read buffer TWICE fixes this (alternatively
@@ -325,7 +325,7 @@ static void ublast_initial_wipeout(void)
 
 	respond("RX80Z");	// Read 128 bytes to clear read buffer
 	if (!g_standalone)
-		usleep(500 * MILLISECONDS);	// NB there normally is nothing to read, so FTDI I/O will timeout needing a longer usleep
+		JTAGGER_SLEEP(500 * MILLISECONDS);	// NB there normally is nothing to read, so FTDI I/O will timeout
 
 	int retmsg = io_check();
 
@@ -337,7 +337,7 @@ static void ublast_initial_wipeout(void)
 	{
 		respond("RX80Z");	// Read another 128 bytes (seems to be necessary when previous read was non-zero bytes)
 		if (!g_standalone)
-			usleep(500 * MILLISECONDS);
+			JTAGGER_SLEEP(500 * MILLISECONDS);
 		int retmsg = io_check();
 		if (!g_silent)
 			printf("seconf flush of read buffer retmsg %08X\n", retmsg);
@@ -527,7 +527,7 @@ static int find_device(unsigned int device_id)
 
 		printf("device_params[%d][0] %08x compare device_id %08x\n", i, device_params[i][0], device_id);
 #endif
-		if (device_params[i][DEVICE_PARAMS_MAXINDEX_CHIP_ID] == device_id)
+		if (device_params[i][DEVICE_PARAMS_CHIP_ID] == device_id)
 			return i;	// found
 	}
 	return 0;		// NB device_index=0 explicitly means not found
@@ -552,7 +552,7 @@ static int init_fpga(int *device_index)
 
 	// Allow time for server to respond
 	if (!g_standalone)
-		usleep(10 * MILLISECONDS);	// 10 milliseconds should be sufficient for status, FTDI I/O will take longer.
+		JTAGGER_SLEEP(10 * MILLISECONDS);	// 10 milliseconds should be sufficient for status, FTDI I/O will take longer.
 	retmsg = clientflushrx();
 	if (!g_silent)
 		printf("status retmsg %08X\n", retmsg);
@@ -569,7 +569,7 @@ static int init_fpga(int *device_index)
 		printf("attemting to open FTDI...\n");
 		respond("JZ");
 		if (!g_standalone)
-			usleep(500 * MILLISECONDS);	// 500 milliseconds since JCMD_OPEN takes longer
+			JTAGGER_SLEEP(500 * MILLISECONDS);	// 500 milliseconds since JCMD_OPEN takes longer
 		retmsg = clientflushrx();
 		if (!g_silent)
 			printf("ftdi open retmsg %08X\n", retmsg);
@@ -591,7 +591,7 @@ static int init_fpga(int *device_index)
 	// Get status again (just for info)
 	respond("SZ");
 	if (!g_standalone)
-		usleep(10 * MILLISECONDS);
+		JTAGGER_SLEEP(10 * MILLISECONDS);
 	retmsg = clientflushrx();
 	if (!g_silent)
 		printf("status retmsg %08X\n", retmsg);
@@ -604,7 +604,7 @@ static int init_fpga(int *device_index)
 		// Get FTDI status
 		respond("HZ");
 		if (!g_standalone)
-			usleep(10 * MILLISECONDS);
+			JTAGGER_SLEEP(10 * MILLISECONDS);
 		retmsg = clientflushrx();
 		printf("ftdi status retmsg %08X\n", retmsg);
 		printf("message: %s\n", g_clientmsg.mtext);	// Demonstrate access to last message
@@ -651,21 +651,25 @@ static int init_fpga(int *device_index)
 
 	// Confirm the ID in the message
 
-	char idstr[16];
+	char idstr[16] = { 0 };
 	unsigned int device_sc = 0, device_id;
 	strncpy(idstr, g_clientmsg.mtext+4, 8);
 
-//  NB this leaves the hex digit pairs swapped, hence the fix below, TODO alternatively ntohl() or bswap_32()
-//	reverse(idstr);
+#ifndef __MINGW32__
 	sscanf(idstr, "%x", &device_sc);
-//	device_id = ((device_sc & 0xf0f0f0f0) >> 4) | ((device_sc & 0x0f0f0f0f) << 4);
 	device_id = bswap_32(device_sc);
+#else
+	// MinGW does not have bswap_32() and I don't fancy including the winsock stuff just for htonl()
+	reverse(idstr);//  NB this leaves the hex digit pairs swapped, hence the fix below
+	sscanf(idstr, "%x", &device_sc);
+	device_id = ((device_sc & 0xf0f0f0f0) >> 4) | ((device_sc & 0x0f0f0f0f) << 4);	// Swap nibbles
+#endif
 
 	// device_id = 0x12345678;	// TEST non-match
 
 	*device_index = find_device(device_id);
 
-	if (!g_silent)
+//	if (!g_silent)
 		printf("device_id [%s] %08x index %d\n", idstr, device_id, *device_index);
 
 	if (*device_index)	// NB device_index=0 explicitly means not found
@@ -936,11 +940,11 @@ int main (int argc, char **argv)
 			printf("Retrying close/open FTDI device\n");
 			respond("UZ");
 			if (!g_standalone)
-				usleep(1000 * MILLISECONDS);
+				JTAGGER_SLEEP(1000 * MILLISECONDS);
 			clientflushrx();
 			respond("JZ");
 			if (!g_standalone)
-				usleep(1000 * MILLISECONDS);
+				JTAGGER_SLEEP(1000 * MILLISECONDS);
 			clientflushrx();
 			// NB ftdi_ok status is updated in jtagger()
 		}
@@ -958,7 +962,7 @@ int main (int argc, char **argv)
 			// printf("jtagger exit with status %d\n", ret);
 			break;	// Omit this break in order to to loop regardless of successful result
 		}
-		usleep (2000 * MILLISECONDS);	// 2 seconds between retries
+		JTAGGER_SLEEP (2000 * MILLISECONDS);	// 2 seconds between retries
 	}
 
 	// Finish with TAP_RESET (safe since server will reject if FTDI not open, but check ftdi_ok anyway

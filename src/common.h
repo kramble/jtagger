@@ -2,25 +2,36 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <alloca.h>
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <time.h>
-#include <pwd.h>
-#include <byteswap.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <sys/ipc.h>
-#include <sys/msg.h>
 
 #include "misc.h"
 #include "ublast_access.h"
+
+#ifndef __MINGW32__
+#include <alloca.h>
+#include <pwd.h>
+#include <byteswap.h>
+#include <sys/ipc.h>
+#include <sys/msg.h>
+#define JTAGGER_SLEEP usleep
+#else
+#define IPC_NOWAIT 04000
+#define ENOMSG 42
+int msgsnd(int msqid, const void *msgp, size_t msgsz, int msgflg);
+ssize_t msgrcv(int msqid, void *msgp, size_t msgsz, long msgtyp, int msgflg);
+#define JTAGGER_SLEEP windows_sleep
+#endif
 
 // #define SOCKFILE "/tmp/jtag.socket"		// Just used as filename for ftok()
 #define SOCKFILE "~/.jtag.socket"			// Just used as filename for ftok() (~ expands to $HOME)
@@ -105,12 +116,12 @@ extern int g_debug_log;		// Write responds to file
 // NB using global g_clientmsg so caller can access last message
 extern struct jtag_msgbuf g_clientmsg;		// See clientflushrx()
 
-#define DEVICE_PARAMS_MAXINDEX_CHIP_ID	0
-#define DEVICE_PARAMS_MAXINDEX_IR_LENGTH 1
-#define DEVICE_PARAMS_MAXINDEX_PREAMBLE 2
-#define DEVICE_PARAMS_MAXINDEX_POSTAMBLE 3
-#define DEVICE_PARAMS_MAXINDEX_CHECK_BITS 4
-#define DEVICE_PARAMS_MAXINDEX_STARTUP 5
+#define DEVICE_PARAMS_CHIP_ID	0
+#define DEVICE_PARAMS_IR_LENGTH 1
+#define DEVICE_PARAMS_PREAMBLE 2
+#define DEVICE_PARAMS_POSTAMBLE 3
+#define DEVICE_PARAMS_CHECK_BITS 4
+#define DEVICE_PARAMS_STARTUP 5
 #define DEVICE_PARAMS_MAXINDEX 5
 
 // TODO add a command line option to read parameters from a configuration file (this is why device_params
@@ -136,4 +147,6 @@ int serve_alone(char *msg);
 int client(void);
 int server(void);
 int usercode(void);
-
+#ifdef __MINGW32__
+int windows_sleep(unsigned int useconds);
+#endif

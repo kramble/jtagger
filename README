@@ -2,9 +2,6 @@ Jtagger is a utility to program a Terasic DE0-Nano board from a linux host compu
 and communicate via virtual jtag. It does NOT need the installation of Altera/Intel
 Quartus software or drivers (this was the reason the utility was written).
 
-NOTE the current version is LINUX ONLY, a Windows port may be forthcoming, but is not
-high on my TODO-list (as will be apparent from the following background info).
-
 The project came about because I installed (dual boot) LinuxMint onto on old Windows Vista
 laptop, but did not have the free disk space for a linux installation of Quartus. I could
 run the pre-existing windows version via wine, but needed to boot into Vista to program the
@@ -37,11 +34,6 @@ which was released under LGPL (see file).
 
 Buiding
 -------
-A reminder, it only builds on 64 bit LINUX. You may be able to build on Windows with mingw/cygwin
-but will need to strip out the SYSTEM V messaging code (or write stubs). It's not needed for the
-current standalone version of jtagger (I left the code in-place because it was an integral part
-of the original development, it really needs refactoring to remove it and make it all pretty).
-
 You'll need the usual gcc and build tools (make). The only other dependancies are libusb-dev and
 libftdi-dev (sudo apt-install libusb-dev libftdi-dev), then just "cd src" and "make".
 CAVEAT: I haven't tried a build on a "clean" system, so YMMV. I may have missed something.

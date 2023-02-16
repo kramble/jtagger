@@ -208,7 +208,7 @@ int usercode(void)
 	for (int i=startat; i<16; i++)
 	{
 		vjtag_test(i,0);
-		usleep(dsec);
+		JTAGGER_SLEEP(dsec);
 	}
 
 	// test vdr ... NB need VIR=3 (see verilog EXTEST mode) to enable VDR loading to LEDs
@@ -216,7 +216,7 @@ int usercode(void)
 	for (int i=startat; i<16; i++)	
 	{
 		vjtag_test(3,i);
-		usleep(dsec);
+		JTAGGER_SLEEP(dsec);
 	}
 
 	vjtag_test(3,0);	// DR Leds off

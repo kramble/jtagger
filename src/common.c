@@ -113,6 +113,7 @@ int parse_hex(char *s, uint8_t *buf, int *bufidx)
 	return 0;
 }
 
+#ifndef __MINGW32__
 const char *gethomedir(void)
 {
 	// https://stackoverflow.com/questions/2910377/get-home-directory-in-linux
@@ -259,6 +260,27 @@ int initmessage()
 	return 0;
 }
 
+#else
+
+int msgsnd(int msqid, const void *msgp, size_t msgsz, int msgflg)
+{
+	return 0;
+}
+
+ssize_t msgrcv(int msqid, void *msgp, size_t msgsz, long msgtyp, int msgflg)
+{
+	return 0;
+}
+
+int initmessage()
+{
+	printf("Client/Server mode is not supported on Windows\n");
+	exit(1);
+	return 0;
+}
+
+#endif // __MINGW32__
+
 int respond(char *s)
 {
 	// if (!g_silent) printf("rs: %s\n", s);
@@ -340,7 +362,7 @@ int respond(char *s)
 	if (msgsnd(g_msqtx, &msg, len, 0) == -1)
 	{
 		// NB we get EINVAL if len > MSGMAX which is 8192 ... oops it's 8196 for ublast_initial_wipeout()
-		printf("respond: ERROR %d len %ld\n", errno, len);
+		printf("respond: ERROR %d len %" PRIuPTR "\n", errno, len);
 		perror("respond: msgsnd");
 		exit (1);
 	}		
@@ -530,3 +552,13 @@ int io_check(void)
 	return ret;
 }
 
+#ifdef __MINGW32__
+#include <windows.h>
+int windows_sleep(unsigned int useconds)
+{
+	// While MinGW supplies usleep(), it seems to be buggy and just returns without delay so use
+	// the native Windows version (which takes milliseconds, not microseconds as a parameter)
+	Sleep(useconds / 1000);
+	return 0;
+}
+#endif

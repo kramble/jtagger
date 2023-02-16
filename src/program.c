@@ -182,7 +182,7 @@ static int finish_programming()
 
 #if 1
 	int startup_clocks = 120000;	// This is the value from the Quartus 10.0 SVF file, it's plenty too much
-	startup_clocks = device_params[g_device_index][DEVICE_PARAMS_MAXINDEX_STARTUP];
+	startup_clocks = device_params[g_device_index][DEVICE_PARAMS_STARTUP];
 	// printf("runtest %d\n", startup_clocks);
 	if (startup_clocks > 0)			// Sanitise!
 		runtest(startup_clocks);
@@ -283,7 +283,7 @@ static void send_residual(char *packbuf, char *dst)
 			lastlen = dst - last;	// DEBUG
 			printf("numpackets = %d packbuf = %p last = %p lastlen = %d\n", 
 				numpackets, packbuf, last, lastlen);
-			printf("packlen = %ld lastoffset = %ld\n", dst - packbuf, last - packbuf);
+			printf("packlen = %" PRIuPTR " lastoffset = %" PRIuPTR "\n", dst - packbuf, last - packbuf);
 		}
 
 		if (last < dst)
@@ -330,12 +330,12 @@ static int send_data(void)
 	int seq = 0;
 
 	size_t buflen = strlen(buf);
-	printf("program bytes %ld\n", buflen / 2);
+	printf("program bytes %" PRIuPTR "\n", buflen / 2);
 
 	int TDIbits = g_clocks;		// DE0-NANO 5748760
 	if (buflen != TDIbits/4)
 		// doabort(func, "bad len (total hex chars)");
-		printf("WARNING buflen %ld != TDIbits %d /4\n", buflen, TDIbits);
+		printf("WARNING buflen %" PRIuPTR " != TDIbits %d /4\n", buflen, TDIbits);
 
 	// Pack multiple FTDI writes into max size message ... see packmode above
 	char packbuf[BUF_LEN];	// NB BUF_LEN is message buffer
@@ -407,7 +407,7 @@ static int send_data(void)
 		}
 	}
 
-	// printf("count = %d * sizeof(packbuf) = %ld \n", count, count * sizeof(packbuf));
+	// printf("count = %d * sizeof(packbuf) = %" PRIuPTR "\n", count, count * sizeof(packbuf));
 
 	send_residual(packbuf, dst);
 
@@ -435,9 +435,9 @@ static int parse_rbf(FILE *f, int run)
 		if (len == sizeof(buf))
 			DOABORT("buffer overflow, TODO increase HEXBUF");
 		// if (len != expected)
-		//	printf("WARNING read %ld bytes expected %ld bytes for DE0-NANO\n", len, expected);
+		//	printf("WARNING read %" PRIuPTR " bytes expected %" PRIuPTR " bytes for DE0-NANO\n", len, expected);
 		// else
-			printf("loaded %ld bytes\n", len);
+			printf("loaded %" PRIuPTR " bytes\n", len);
 		pend = p + len;
 
 		// dump (buf, pend-buf);
@@ -484,25 +484,20 @@ $ diff z22+rbf.hd zsvfdump.hd
 
 	int count = 0;
 
-	int preamble = 0, postamble = 0;
-	if (g_device_index != -1)
-	{
-		preamble = device_params[g_device_index][DEVICE_PARAMS_MAXINDEX_PREAMBLE];
-		postamble = device_params[g_device_index][DEVICE_PARAMS_MAXINDEX_POSTAMBLE];
+	int preamble = device_params[g_device_index][DEVICE_PARAMS_PREAMBLE];
+	int postamble = device_params[g_device_index][DEVICE_PARAMS_POSTAMBLE];
 
-		if (preamble < 0) preamble = 0;		// Sanitise!
-		if (postamble < 0) postamble = 0;
+	if (preamble < 0) preamble = 0;		// Sanitise!
+	if (postamble < 0) postamble = 0;
 
-		// TODO bitbang any surplus bits (preamble before, postamble after), but for now just round up
+	// TODO bitbang any surplus bits (preamble before, postamble after), but for now just round up
 
-		// printf("initial preamble %d postamble %d\n", preamble, postamble);
-		preamble = (preamble + 7) & ~7;
-		postamble = (postamble + 7) & ~7;
-		// printf("rounded preamble %d postamble %d\n", preamble, postamble);
-		preamble /= 8; postamble /= 8; 
-		// printf("bytes   preamble %d postamble %d\n", preamble, postamble);
-
-	}
+	// printf("initial preamble %d postamble %d\n", preamble, postamble);
+	preamble = (preamble + 7) & ~7;
+	postamble = (postamble + 7) & ~7;
+	// printf("rounded preamble %d postamble %d\n", preamble, postamble);
+	preamble /= 8; postamble /= 8; 
+	// printf("bytes   preamble %d postamble %d\n", preamble, postamble);
 
 	int total_bytecount = 0;	// DEBUG total bytes sent (excludes header bytes, WXZ)
 
@@ -861,7 +856,12 @@ int program_fpga(char *fname, int filetype, int device_index)
 				ret = parse(f, 0xF00FB175, filetype);	// Recite the Magic Spell "FoofBits" (just so I don't call it by mistake)
 				time(&tfinish);
 
-				printf("programming complete, duration %ld seconds\n", tfinish - tstart);
+#ifndef __MINGW32__
+				// This is a weird one as PRId64 expands to %ld not %lld on 64 bit linux gcc
+				printf("programming complete, duration %lld seconds\n", (long long)(tfinish - tstart));
+#else
+				printf("programming complete, duration %" PRId64 " seconds\n", (long long)(tfinish - tstart));
+#endif
 			}
 			else
 				printf("programming declined, exit\n");
