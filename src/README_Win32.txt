@@ -32,11 +32,7 @@ you want to install libftdi1.dll into C:\Windows\system32
 The Client/Server option (-s) does not work on Windows, but it was of
 little use anyway.
 
-You will also need zdiag to install the windows driver.
-
-for testing. Jtagger source was fairly easy to port, but building libftdi
-from source is not at all straightforward. So I cheated and downloaded a
-prebuilt version. It works, see README_Win32.txt for details.
+You will also need zadig https://zadig.akeo.ie/ to install the windows driver.
 
 Previous comment about cygwin just for info, I have not progressed this...
 Also a Windows port looks quite promising. It compiles on cygwin (which I was

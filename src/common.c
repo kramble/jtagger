@@ -410,7 +410,7 @@ static int clientflushrx_internal(void)
 				if (first)	// No messages were received, delay and retry (ONCE only unless g_strictrx)
 				{
 					int firstdelay = 20 * 1000;	// 20 ms (NB less than 10ms is insufficient)
-					usleep(firstdelay);
+					JTAGGER_SLEEP(firstdelay);
 					if (g_strictrx)
 					{
 						// Wait FOREVER - needed for programming else message queue fills and we stall (need
@@ -506,7 +506,7 @@ static int clientflushrx_internal(void)
 					if (iter > g_flushrx_maxdelay)	// log maximum iterations
 						g_flushrx_maxdelay = iter;
 
-					usleep(delay);
+					JTAGGER_SLEEP(delay);
 				}
 			}
 			else
@@ -541,7 +541,7 @@ int io_check(void)
 		// bit flag, see commented example in vjtag_test(). It does not trigger the second (million) timeout.
 		printf("io_check TIMEOUT (was there an unexpected read command?)\n");
 		g_flushrx_timeout += 1000;		// Count these in same variable, but units 1000
-		usleep(200 * 1000);	// Give it a (lenghty) bit longer
+		JTAGGER_SLEEP(200 * 1000);	// Give it a (lenghty) bit longer
 		ret = clientflushrx();
 		if (!ret)
 		{

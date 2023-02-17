@@ -530,7 +530,7 @@ int client(void)
 		}
 
 		// Allow time for server to respond (BEWARE this may be inappropriate for FTDI R/W operations)
-		usleep(10 * 1000);	// 10 milliseconds
+		JTAGGER_SLEEP(10 * 1000);	// 10 milliseconds
 		clientflushrx();
 	}
 	printf("client: fgets EOF\n");

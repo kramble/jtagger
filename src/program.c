@@ -1,7 +1,6 @@
 /* program.c - read Serial Vector Format (.svf) file and (attempt to) program FPGA
 
-For spec see /home/mark/misc/FPGA/quartus/jtagger/docs/svf_specification.pdf
-For hints see /home/mark/misc/FPGA/quartus/openFPGALoader-master
+For the SVF specification google svf_specification.pdf, for hints see openFPGALoader and OpenOCD
 Altera's Jrunner has lots of JTAG stuff, including IR opcodes, chip ids and consts for determining
 the scan length for the configuration status check (SDR 732 TDI in the svf example below), eg
 	EP4CE22E22 {0x20F30DD, 244, 149, 10},	... NB mutiply by 3, so SDR 732 and check bit 447
@@ -9,7 +8,7 @@ I suspect this is doing a boundary scan and testing the CONFIG_DONE pin, even th
 opcode is not the same as the boundary scan codes. See the cyclone5_handbook.pdf which describes opcode functions,
 including scary looking private "do not use, these may destroy chip" opcodes (O_o)
 
-To generate a SVF from Quartus SOF file...
+To generate a SVF from Quartus SOF file (using wine since Quartus is not natively installed on my linuxmint) ...
 $ wine /media/mark/Vista/altera/10.1/quartus/bin/quartus_cpf.exe -c -q 12.0MHz -g 3.3 -n p system.sof system.svf
 NB unlike .sof a .svf is a plain text file (though .sof does have a text header)
 
@@ -17,7 +16,7 @@ Raw Binary Files (.rbf) are created in the same way (see openFPGALoader/doc/vend
 support compression, use -r switch on openFPGALoader for rbf input) ...
 quartus_cpf.exe -c --option=bitstream_compression=off system.sof system.rbf
 
-From the spec...
+From the spec (quote) ...
 The SVF file is defined as an ASCII file that consists of a set of SVF statements.
 The maximum number of characters allowed on a line is 256, although one SVF
 statement can span more than one line. Each statement consists of a command
@@ -26,7 +25,7 @@ SVF is not case sensitive. Comments can be inserted into a SVF file after an
 exclamation point ‘!’ or a pair of slashes ‘//’. Either ‘//’ or ‘!’ will comment out the
 remainder of the line.
 
-For lazy sake, I'm going to assume the following sequence ...
+For lazy sake, I'm going to assume the following sequence from a simple DE0-Nano SVF...
 FREQUENCY 2.40E+07 HZ;
 TRST ABSENT;
 ENDDR IDLE;
@@ -60,7 +59,7 @@ STATE IDLE;
 #define PROGERR_BYTES 108
 
 // This is the large static buffer shared by both filetype versions of the programmer
-// TODO allocate dynamically and resize as neccessary (mmap looks handy)
+// TODO allocate dynamically and resize as neccessary (mmap looks handy, but is not Windows compatible)
 // #define HEXBUF (2 * 1024 * 1024)	// (Old value) sufficient for the De0-Nano Cyclone EP4CE22 FPGA
 #define HEXBUF (16 * 1024 * 1024)	// It's bss so no harm making this a lot bigger (in case someone has a HUGE fpga)
 static char buf[HEXBUF];			// Retain buffer from run==0 for run==magic call
@@ -102,7 +101,7 @@ static void dump (char *buf, size_t n)	// DEBUG dump to file
 
 static int begin_programming()
 {
-	// Perform initial steps. Originally based on an SFV file, but now just following openFPGALoader sequences
+	// Perform initial steps. Originally based on an SVF file, but now just following openFPGALoader sequences
 
 	// TODO fix this mess (it's basically just cribbed from a dumped FTDI parameters log of an
 	// openFPGALoader session). Do it programatically instead.
@@ -111,10 +110,9 @@ static int begin_programming()
 	// the current sequence for RBF only).
 
 	// Enter STATE IDLE
-	// init_fpga() leaves us in tap_reset, so just do runtest(5)
 
-	runtest5();	// Not actually needed - it works fine without it, I suspect because the next string starts 
-				// 3e3f3e3f3e3f3e3f3e3f3e3f which is tap_reset (with TDI=1 cf TDI=0 in my version)
+	tap_reset();	// Not actually needed - it works fine without it, I suspect because the next string starts 
+	runtest5();		// 3e3f3e3f3e3f3e3f3e3f3e3f which is tap_reset (with TDI=1 cf TDI=0 in my version)
 
 	// openFPGALoader (log file analysis) does this ...
 	// It looks like tap reset then some checks (readback IR perhaps), then IRSCAN 0x2 PROGRAM (see the "8102" substring)

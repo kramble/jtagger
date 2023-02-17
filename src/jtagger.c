@@ -1,11 +1,15 @@
-/* jtagger.c - JTAG client communicates with server using System V message queues (somewhat depreciated cf POSIX MQs)
+/* jtagger.c - JTAG driver for DE0-Nano (see usercode.c for customised functionality)
 
-See https://beej.us/guide/bgipc/html//index.html (easy examples, which is why I'm using System V not POSIX)
+Client/Server (now depreciated, runs standalone by default) communicate using System V message queues.
 
-NB to list from shell use "ipcs" and "ipcrm" to delete them
+See https://beej.us/guide/bgipc/html//index.html (easy examples, though POSIX is apparently preferred over System V
+in more recent times)
 
-Uses ublast_access_ftdi.c from OpenOCD for communication with Altera USB Blaster, plus code from usb_blaster.c
-hence including original copyright notice...
+NB to list the queues from shell use "ipcs" and "ipcrm" to delete them (usually only neccessary after terminating
+the client or server abnormally, eg via CONTROL-C)
+
+Uses ublast_access_ftdi.c from OpenOCD for communication with DE0-Nano onboard Altera USB Blaster, plus code from
+usb_blaster.c thus including the original copyright notice...
 
  SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -30,7 +34,7 @@ stuff into calls into the OpenOCD stack, or go it my own way (see scan_dr_int() 
 
 #include "common.h"
 
-#define MILLISECONDS 1000	// for usleep()
+#define MILLISECONDS 1000	// for JTAGGER_SLEEP (calls usleep)
 
 int ftdi_ok;
 
@@ -654,23 +658,21 @@ static int init_fpga(int *device_index)
 	char idstr[16] = { 0 };
 	unsigned int device_sc = 0, device_id;
 	strncpy(idstr, g_clientmsg.mtext+4, 8);
+	sscanf(idstr, "%x", &device_sc);
 
 #ifndef __MINGW32__
-	sscanf(idstr, "%x", &device_sc);
 	device_id = bswap_32(device_sc);
 #else
 	// MinGW does not have bswap_32() and I don't fancy including the winsock stuff just for htonl()
-	reverse(idstr);//  NB this leaves the hex digit pairs swapped, hence the fix below
-	sscanf(idstr, "%x", &device_sc);
-	device_id = ((device_sc & 0xf0f0f0f0) >> 4) | ((device_sc & 0x0f0f0f0f) << 4);	// Swap nibbles
+#define BSWAP32(n) (((n)>>24 & 0xff) | ((n)>>8 & 0xff00) | ((n)<<8 & 0xff0000) | ((n)<<24 & 0xff000000))
+	device_id = BSWAP32(device_sc);
 #endif
 
 	// device_id = 0x12345678;	// TEST non-match
 
 	*device_index = find_device(device_id);
 
-//	if (!g_silent)
-		printf("device_id [%s] %08x index %d\n", idstr, device_id, *device_index);
+	// printf("device_id [%s] %08x index %d\n", idstr, device_id, *device_index);
 
 	if (*device_index)	// NB device_index=0 explicitly means not found
 	{
