@@ -1,0 +1,51 @@
+[*]
+[*] GTKWave Analyzer v3.3.104 (w)1999-2020 BSI
+[*] Fri Feb 17 15:36:11 2023
+[*]
+[dumpfile] "/home/mark/misc/FPGA/quartus/txrxjtag/fpga/txrxmem/zsystem.vcd"
+[dumpfile_mtime] "Fri Feb 17 15:33:52 2023"
+[dumpfile_size] 18061
+[savefile] "/home/mark/misc/FPGA/quartus/txrxjtag/fpga/txrxmem/zsystem.gtkw"
+[timestart] 1854
+[size] 1234 647
+[pos] -1 -1
+*-4.000000 1044 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+[treeopen] tb.
+[treeopen] tb.u.
+[treeopen] tb.u.u_jtag_top.
+[sst_width] 212
+[signals_width] 205
+[sst_expanded] 1
+[sst_vpaned_height] 163
+@28
+tb.u.u_jtag_top.tck
+@22
+tb.u.u_jtag_top.ir[3:0]
+tb.u.u_jtag_top.u_jtag_vdr.vdr[31:0]
+@28
+tb.u.u_jtag_top.shift_dr
+tb.u.u_jtag_top.update_dr
+tb.u.u_jtag_top.capture_dr
+tb.u.u_jtag_top.tdi
+tb.u.u_jtag_top.tdo2tap
+tb.u.u_jtag_top.vdr_tdo
+tb.u.u_jtag_top.raddr_enable
+tb.u.u_jtag_top.waddr_enable
+@29
+tb.u.u_jtag_top.rdata_enable
+@28
+tb.u.u_jtag_top.wdata_enable
+@22
+tb.u.u_jtag_top.raddr_out[31:0]
+tb.u.u_jtag_top.waddr_out[31:0]
+tb.u.u_jtag_top.wdata_out[31:0]
+tb.u.u_jtag_top.rdata_in[31:0]
+@28
+tb.u.u_jtag_top.u_jtag_vdr.write_increment
+tb.u.u_jtag_top.u_jtag_vdr.read_increment
+tb.u.wram_enable
+tb.u.ram_write_strobe
+@22
+tb.u.nano_led_[7:0]
+[pattern_trace] 1
+[pattern_trace] 0

@@ -440,7 +440,7 @@ int scan_dr_int(unsigned int val, int bits)
 	// Require a minimum of 4 bits since using hub scan as template, the final two
 	// bits needing special handing due to JTAG mode change
 
-	if (bits < 4 || bits > 32)
+	if (bits < 4 || bits > 64)
 	{
 		printf("scan_dr ERROR invalid bits %d\n", bits);
 		DOABORT ("invalid bits");
@@ -448,10 +448,9 @@ int scan_dr_int(unsigned int val, int bits)
 
 	// Construct (5 bit example) "WX2e2f2e2f2e2f2c2d2c2d2c2c6d2c6d2c6d2c6d2e7f3eZ");
 
-	char str[256];	// Plenty for 32 bits (4 char per bit, plus leadin/tailout)
+	char str[1024];	// Plenty for 32 bits (4 char per bit, plus leadin/tailout)
 
-	// char *s = "xxxx";	// segfaults ... because "xxxx" is in a read-only section
-	char s[5];
+	char s[5];		// Construction zone
 	s[4] = 0;
 
 	strcpy (str, "WX2e2f2e2f2e2f2c2d2c2d2c2c");
