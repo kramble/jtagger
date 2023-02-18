@@ -54,7 +54,7 @@ static unsigned long long get_bitbang(unsigned int len, unsigned int shift)
 		p++;
 	}
 	if (!g_silent)
-		printf("value 0x%llx\n", n);
+		printf("value 0x%" PRIx64 "\n", n);
 	return n;
 }
 
@@ -347,7 +347,7 @@ int fpga_txrxmem(void)
 #endif
 
 #if 0
-	// Read data (IRDATA no the same above IRADDR above), slowed down so I can
+	// Read data (IRDATA not the same as IRADDR above), slowed down so I can
 	// check it is counting in the correct sequence
 	vdr_ret = scan_vir_vdr(4, 32, IRADDR, 0x80);	// Set initial address
 	for (int i=0; i<256; i++)
@@ -367,10 +367,10 @@ int fpga_txrxmem(void)
 
 	// NB LEDs do NOT count since read address is not incrementing
 
-	clientflushrx();	// Flush read buffer (does not help)
+	// clientflushrx();	// Flush read buffer (does not help)
 
 	// Check the values ... well it ALMOST works...
-	for (int i=0; i<64; i++)
+	for (int i=0; i<count; i++)
 	{
 		vdr_ret = scan_vir_vdr(4, 32, IRDATA, 0);	// Read values (address auto increments)
 		printf("VDR returned %08" PRIx64 "\n", vdr_ret);
@@ -401,7 +401,7 @@ int fpga_txrxmem(void)
 	srand(1);
 
 	unsigned int prev = 0;
-	for (int i=0; i<64; i++)
+	for (int i=0; i<count; i++)
 	{
 		vdr_ret = scan_vir_vdr(4, 32, IRDATA, 0);	// Read values (address auto increments)
 		printf("VDR returned %08" PRIx64 " expected %08x %s\n", vdr_ret, prev,

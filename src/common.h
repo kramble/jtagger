@@ -3,6 +3,15 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <inttypes.h>
+
+// **** MUST GO AFTER #include <inttypes.h>
+// This is for 32 bit gcc 3.4.4 (cygming special, gdc 0.12, using dmd 0.125)
+// supplied with Quartus 10.1 - likely need to remove for 64 bit version
+#ifdef __CYGWIN__
+#undef PRIuPTR
+#define PRIuPTR "u"
+#endif
+
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
