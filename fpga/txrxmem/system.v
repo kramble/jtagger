@@ -95,6 +95,7 @@ wire clk;
 		.wdata_out		(wdata_out),
 		.raddr_out		(raddr_out),
 		.waddr_out		(waddr_out),
+		.flags_out		(flags),
 		.wram_enable	(wram_enable)
     );
 
@@ -109,9 +110,10 @@ wire clk;
 	reg [13:0] ram_rd_addr;
 	reg [13:0] ram_wr_addr;
 	reg [31:0] ram_wr_data;
+	reg  [7:0] debug;
 
-	// Shift register adjusts timing of ram write strobe (TODO experiment with SR length)
-`define WE_LEN 4
+	// Shift register adjusts timing of ram write strobe (delayed slightly wrt addr/data ensures properly syncd)
+`define WE_LEN 3
 	reg [`WE_LEN-1:0] wram_enable_d = 0;
 
 `ifndef SIM
@@ -124,6 +126,7 @@ wire clk;
 	wire [`DR_LENGTH-1:0] wdata_out;
 	wire [`DR_LENGTH-1:0] raddr_out;
 	wire [`DR_LENGTH-1:0] waddr_out;
+	wire [`DR_LENGTH-1:0] flags;
 	wire ram_write_strobe = wram_enable_d[`WE_LEN-2] & !wram_enable_d[`WE_LEN-1];
 	wire wram_enable;
 
@@ -139,10 +142,19 @@ wire clk;
 
 		// Write to ram
 		if (ram_write_strobe)
+		begin
 			ram[ram_wr_addr] <= ram_wr_data;
+			debug <= { ram_wr_addr[3:0], ram_wr_data[3:0] };
+		end
     end
    
-	assign nano_led_ = raddr_out[7:0];
+	// Lazy decoding...
+	assign nano_led_ =	flags[8] ? debug :	
+						flags[9] ? raddr_out[7:0] :
+						flags[10] ? waddr_out[7:0] :
+						flags[11] ? wdata_out[7:0] :
+						flags[12] ? rdata_in[7:0] :
+						flags[7:0];
 
 `ifndef SIM
 

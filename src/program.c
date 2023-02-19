@@ -260,7 +260,7 @@ static int push_data(char *token)
 	return ch;
 }
 
-static void send_residual(char *packbuf, char *dst)
+void send_residual(char *packbuf, char *dst)	// NOT static since called from usercode()
 {
 	int debug = 0;
 	int lastlen = 0;
@@ -819,7 +819,7 @@ void printerror(int err)
 	printf("\n");
 }
 
-int program_fpga(char *fname, int filetype, int device_index)
+int program_fpga(char *fname, int filetype, int device_index, int yes)
 {
 	printf("PROGRAM FPGA ... reading %s\n", fname);
 	FILE *f = fopen(fname, "rb");
@@ -836,7 +836,7 @@ int program_fpga(char *fname, int filetype, int device_index)
 	{
 		char line[256];
 
-		if (g_spoofprog)
+		if (g_spoofprog || yes)
 			*line = 'Y';	// DEBUG skip prompt
 		else
 		{

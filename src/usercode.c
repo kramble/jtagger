@@ -12,6 +12,20 @@ A bit repetitive, TODO write functions for common steps.
 #define PRIx64 "llx"
 #endif
 
+// Instruction Register opcodes, see fpga/txrxmem/defines.v
+#define IRADDR	1
+#define IWADDR	2
+#define IRDATA	5
+#define IWDATA	6
+#define IFLAGS	14
+
+// Debug flags (sets LED source), see fpga/txrxmem/system.v
+#define FLAGS_DEBUG  0x100
+#define FLAGS_RADDR  0x200
+#define FLAGS_WADDR  0x400
+#define FLAGS_WDATA  0x800
+#define FLAGS_RDATA  0x1000
+
 static int print_nibble(void)
 {
 	// eg g_clientmsg.mtext == "9KRX02020203Z"
@@ -58,12 +72,12 @@ static unsigned long long get_bitbang(unsigned int len, unsigned int shift)
 	return n;
 }
 
-static void IRSHIFT_USER0(void)	// Select VDR
+static void IRSHIFT_USER0(void)	// Select VDR, entry RUNIDLE exit IRPAUSE 
 {
 	respond("WX2e2f2e2f2c2d2c2d2c810c2c2d2e2f2e2e2c2d2cZ");	// IRSHIFT USER0 0x0c
 }
 
-static void IRSHIFT_USER1(void)	// Select VIR
+static void IRSHIFT_USER1(void)	// Select VIR, entry RUNIDLE exit IRPAUSE 
 {
 	respond("WX2e2f2e2f2c2d2c2d2c810e2c2d2e2f2e2e2c2d2cZ");	// IRSHIFT USER1 0x0e
 }
@@ -278,10 +292,10 @@ long long unsigned scan_vir_vdr(unsigned int irlen, unsigned int vrlen, unsigned
 	tap_reset();
 	runtest5();
 
-	IRSHIFT_USER1();
+	IRSHIFT_USER1();	// entry RUNIDLE exit IRPAUSE 
 
 	// NB need to scan 5 bits for 4 bit VIR as top bit is hub address
-	scan_dr_int(0x10 | vir, irlen+1);	// IRPAUSE to DRSCAN (addr=1 is MSB, hence 0x10)
+	scan_dr_int(0x10 | vir, irlen+1);	// IRPAUSE to RUNIDLE (addr=1 is MSB, hence 0x10)
 
 	clientflushrx();
 
@@ -291,7 +305,7 @@ long long unsigned scan_vir_vdr(unsigned int irlen, unsigned int vrlen, unsigned
 	DRSHIFT_RUNIDLE();
 	IRSHIFT_USER0();
 
-	scan_dr_int(vdr, vrlen);	// IRPAUSE to DRSCAN
+	scan_dr_int(vdr, vrlen);
 
 	clientflushrx();
 	char str[256];
@@ -307,110 +321,236 @@ long long unsigned scan_vir_vdr(unsigned int irlen, unsigned int vrlen, unsigned
 	return vdr_ret;
 }
 
-int fpga_txrxmem(void)
+static void bulk_upload(char *mem, unsigned int len)
+{
+	// Setup is same as scan_vir_vdr(4, 32, IWDATA ...)
+	// TODO could buffer the setup (it won't give much speedup, and this is LIGHTNING fast anyway)
+
+	int vir = IWDATA, irlen = 4;
+
+	tap_reset();
+	runtest5();
+
+	IRSHIFT_USER1();
+
+	// NB need to scan 5 bits for 4 bit VIR as top bit is hub address
+	scan_dr_int(0x10 | vir, irlen+1);	// IRPAUSE to DRSCAN (addr=1 is MSB, hence 0x10)
+
+	clientflushrx();
+
+	respond("RX05Z");	// read 5 bytes (expect 0202020202020202, 5 zeros)
+	io_check();
+
+	DRSHIFT_RUNIDLE();
+	IRSHIFT_USER0();	// exits in IRPAUSE
+
+	// Bulk upload is based on scan_dr_int(vdr, vrlen) and parse_rbf()
+	// Scans data non-stop (does not pass through DRUPDATE), see jtag_vdr.v
+
+	// Copied verbatim from parse_rbf()
+	// NB unlike scan_dr_int() we do not set the readback flag
+
+	char packbuf[BUF_LEN];	// NB BUF_LEN is message buffer
+	*packbuf = 0;			// Set as empty
+
+#if 0
+	// This does not work properly (sends garbage)
+	strcpy (packbuf, "WX2e2f2e2f2e2f2c2d2c2d2c2c");	// IRPAUSE to DRSHIFT
+	char *dst = packbuf + strlen(packbuf);
+#else
+	// Do it EXACTLY like parse_rbf()
+	respond("WX2e2f2e2f2e2f2c2d2c2d2c2cZ");	// IRPAUSE to DRSHIFT
+	char *dst = packbuf;
+	strcpy(dst, "WX");
+	dst += 2;
+#endif
+
+	char *p = mem;
+	int byte = 0;
+	while (p < mem + len)
+	{
+		if (byte == 0)
+		{
+			// packet header
+			*dst++ = 'b';
+			*dst++ = 'f';
+		}
+
+		unsigned char ch = *p++;
+
+		// Two hex chars (bytes)
+		*dst++ = TOHEX(ch>>4);
+		*dst++ = TOHEX(ch);
+		*dst = 0;	// Not necessary but makes debugging easier since can see end of data when printing buffer
+
+		if (++byte > 62)
+		{
+			byte = 0;
+
+			// Always operate in packmode
+			size_t pblen = dst - packbuf;
+			if (pblen > sizeof(packbuf) - 132)	// Tweak so it just fits
+			{
+				*dst++ = 'Z';
+				*dst = 0;
+
+				respond(packbuf);
+
+				dst = packbuf;
+				strcpy(dst, "WX");
+				dst += 2;
+				*dst = 0;	// Again, not necessary
+			}
+		}
+	}
+
+	send_residual(packbuf, dst);
+	tap_reset();
+}
+
+int fpga_txrxmem(char *uparams)
 {
 	// TODO speed improvements eg buffer the FTDI I/O and avoid readback (clear the read flag in the write data),
 	// use bulk byte loads instead of bitbang
 
 	printf("\nExercising fpga/txrxmem\n\n");
 
-/* 
- See fpga/txrxmem/defines.v
-`define IIDENT    4'b0000
-`define IRADDR    4'b0001
-`define IWADDR    4'b0010
-`define IRDATA    4'b0101
-`define IWDATA    4'b0110
-*/
-
-#define IRADDR	1
-#define IWADDR	2
-#define IRDATA	5
-#define IWDATA	6
-
 	tap_reset();
 	runtest5();
 
 	unsigned long long vdr_ret = 0;
 
-#if 0
-	// EXAMPLE This sets LEDs since they are the LSB of the ram read address
-	vdr_ret = scan_vir_vdr(4, 32, IRADDR, 0x66);
-	return 0;	// Useful to confirm initial functionality
-#endif
-
-#if 0
-	// EXAMPLE This counts LEDs (a bit slower than I'd like, approx 50/sec)
-	for (int i=0; i<256; i++)
-		vdr_ret = scan_vir_vdr(4, 32, IRADDR, i);
-	return 0;	// Useful to confirm initial functionality
-#endif
-
-#if 0
-	// Read data (IRDATA not the same as IRADDR above), slowed down so I can
-	// check it is counting in the correct sequence
-	vdr_ret = scan_vir_vdr(4, 32, IRADDR, 0x80);	// Set initial address
-	for (int i=0; i<256; i++)
-	{
-		vdr_ret = scan_vir_vdr(4, 32, IRDATA, 0);	// NB pass in vdr=0, cf i above
-		JTAGGER_SLEEP(100 * 1000);
-	}
-	return 0;
-#endif
+	// vdr_ret = scan_vir_vdr(4, 32, IFLAGS, 0x55);			// Set the LEDs to 0x55
+	// vdr_ret = scan_vir_vdr(4, 32, IFLAGS, FLAGS_WADDR);	// Set LEDs to waddr
+	vdr_ret = scan_vir_vdr(4, 32, IFLAGS, FLAGS_DEBUG);		// Set LEDs to debug (4 bits waddr, wdata)
 
 	vdr_ret = scan_vir_vdr(4, 32, IRADDR, 0x0);	// Set read address 0
 	vdr_ret = scan_vir_vdr(4, 32, IWADDR, 0x0);	// Set write address 0
 
-	int count = 64;
-	for (int i=0; i<count; i++)
-		vdr_ret = scan_vir_vdr(4, 32, IWDATA, i);	// Write values (address auto increments)
+	// Use current time as prefix to debug what data is written and when
+	int prefix = (time(NULL) & 0xffff) << 16;
 
-	// NB LEDs do NOT count since read address is not incrementing
+	int count = 9;
+	for (int i=0; i<count+1; i++)
+	{
+		printf("write addr %d val %08x", i, prefix+i);
+		vdr_ret = scan_vir_vdr(4, 32, IWDATA, prefix+i);	// Write values (address auto increments)
+		printf(" returned vdr %08" PRIx64 "\n", vdr_ret);
+		if (uparams && strchr(uparams, 'w'))
+			JTAGGER_SLEEP(1000 * 1000);	// watch addr/data on LEDS (needs FLAGS_DEBUG, see above)
+	}
 
-	// clientflushrx();	// Flush read buffer (does not help)
+	printf("\n");
 
-	// Check the values ... well it ALMOST works...
-	for (int i=0; i<count; i++)
+	int addr = 0;
+
+	// Readback the ram values ...
+	for (int i=0; i<=count+2; i++)
 	{
 		vdr_ret = scan_vir_vdr(4, 32, IRDATA, 0);	// Read values (address auto increments)
-		printf("VDR returned %08" PRIx64 "\n", vdr_ret);
+		printf("addr %08x returned vdr %08" PRIx64 "\n", addr, vdr_ret);
+		addr++;
 	}
-	// ... the sequence is
-	// VDR returned 0000003f
-	// VDR returned 00000000
-	// VDR returned 00000001
-	// etc.
-	// VDR returned 0000003e
 
-	// Debugging will have to wait (the problem could be in the usercode or more likely verilog).
-	// I'll push it up to github as it's nearly working.
+	printf("\nRANDOM numbers ...\n");
 
-	// One more demo, just to prove it's not just incrementing ...
-
-	printf("\nRANDOM numbers (timing adjusted due to BUG, see usercode.c) ...\n");
+	vdr_ret = scan_vir_vdr(4, 32, IRADDR, 0x0);	// Set read address 0
+	vdr_ret = scan_vir_vdr(4, 32, IWADDR, 0x0);	// Set write address 0
 
 	srand(1);
 
-	for (int i=0; i<count; i++)
-		vdr_ret = scan_vir_vdr(4, 32, IWDATA, rand());	// Write values (address auto increments)
+	for (int i=0; i<=count; i++)
+	{
+		unsigned int n = rand();
+		printf("write addr %d val %08x", i, n);
+		vdr_ret = scan_vir_vdr(4, 32, IWDATA, n);	// Write values (address auto increments)
+		printf(" returned vdr %08" PRIx64 "\n", vdr_ret);
+	}
 
-	// NB LEDs do NOT count since read address is not incrementing
-
-	// clientflushrx();	// Flush read buffer (does not help)
+	printf("\n");
 
 	srand(1);
 
-	unsigned int prev = 0;
-	for (int i=0; i<count; i++)
+	for (int i=0; i<=count; i++)
 	{
+		unsigned int n = rand();
 		vdr_ret = scan_vir_vdr(4, 32, IRDATA, 0);	// Read values (address auto increments)
-		printf("VDR returned %08" PRIx64 " expected %08x %s\n", vdr_ret, prev,
-				vdr_ret == prev ? "MATCH" : "BAD");
-		prev=rand();	// !! BUG !! Note how the sequence is offset by one
+		printf("addr %d returned %08" PRIx64 " expected %08x %s\n", i, vdr_ret, n,
+				vdr_ret == n ? "MATCH" : "BAD");
 	}
+
+	// vdr_ret = scan_vir_vdr(4, 32, IRDATA, 0);
+	// printf("post read VDR returned %08" PRIx64 "\n", vdr_ret);
 
 	// COMMENT it's slow, but that's because we're bitbanging and not buffering. Fixing that should
-	// give speeds similar to the RBF programming, vis 700kB in 2 seconds.
+	// give speeds similar to the RBF programming, vis 700kB in 2 seconds... and it DOES !!!!
+
+	// Test bulk uploading
+#define MEMSIZE 16384	// 32 bit words
+	unsigned int mem[MEMSIZE];
+
+	srand(2);	// NB different since we alredy have srand(1) data loaded
+
+	for (int i=0; i<MEMSIZE; i++)
+		mem[i] = rand();
+
+	vdr_ret = scan_vir_vdr(4, 32, IWADDR, 0x0);	// Set write address 0
+
+	int size = MEMSIZE * sizeof(int);
+
+	// Upload is FAST as we're continuously shifting (EXACTLY the same as programming the bitstream)
+
+	if (uparams && strchr(uparams, 's'))
+	{
+		int iter = 100;
+		printf("\nBulk upload %d bytes speedtest %d iterations...\n", size, iter);
+		time_t tstart, tfinish;
+		time(&tstart);
+		for (int i=0; i<iter; i++)	// NOT while() since want iter below
+		{
+			vdr_ret = scan_vir_vdr(4, 32, IWADDR, 0x0);	// Set write address 0
+			bulk_upload((char*)mem, size);	// NB size is in bytes
+			if (i%10 == 9)
+				printf("done %d iterations of %d\n", i+1, iter);
+		}
+		time(&tfinish);
+// Don't know if this is a bug or not, but it's annoying
+#ifndef __MINGW32__
+#undef PRId64
+#define PRId64 "lld"
+#endif
+		printf("... done %" PRId64 " bytes in %" PRId64 " seconds = %"  PRId64 " bytes/sec\n\n",
+			 iter * (long long) size, (long long)(tfinish - tstart),
+			 iter * (long long) size / (long long)(tfinish - tstart));
+	}
+	else
+	{
+		printf("\nBulk upload %d bytes...\n", size);
+		bulk_upload((char*)mem, size);	// NB size is in bytes
+		printf("... done\n\n");
+	}
+	
+	vdr_ret = scan_vir_vdr(4, 32, IRADDR, 0x0);	// Set read address 0
+
+	// Readback is SLOW as we're bitbanging, so just do random locations
+	printf("Testing random locations (SLOW since bitbang)\n");
+
+	vdr_ret = scan_vir_vdr(4, 32, IFLAGS, FLAGS_RADDR);	// Set LEDs to read address for blinkenlights
+
+	if (uparams && strchr(uparams, 's'))
+		count = 16;		// Reduced so as to leave the speed test result on the screen
+	else
+		count = 64;
+
+	for (int i=0; i<=count; i++)
+	{
+		int addr = rand() & 0x3FFF;
+		unsigned int n = mem[addr];
+		vdr_ret = scan_vir_vdr(4, 32, IRADDR, addr);// Set read address
+		vdr_ret = scan_vir_vdr(4, 32, IRDATA, 0);	// Read value
+		printf("addr %04x returned %08" PRIx64 " expected %08x %s\n", addr, vdr_ret, n,
+				vdr_ret == n ? "MATCH" : "BAD");
+	}
 
 	// At exit...
 	tap_reset();
@@ -418,7 +558,7 @@ int fpga_txrxmem(void)
 	return 0;
 }
 
-int usercode(void)
+int usercode(char *uparams)
 {
 	printf("Starting usercode\n\n");
 
@@ -471,7 +611,7 @@ int usercode(void)
 	if (id == 0x97d2f9ce)
 	{
 		printf("Found txtxmem OK\n");
-		return fpga_txrxmem();
+		return fpga_txrxmem(uparams);
 	}
 	else
 	{

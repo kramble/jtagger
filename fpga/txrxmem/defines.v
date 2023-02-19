@@ -19,11 +19,12 @@
 `define	IR_LENGTH	4
 `define	DR_LENGTH	32
 
-`define IBYPASS   4'b1111
 `define IIDENT    4'b0000
 `define IRADDR    4'b0001
 `define IWADDR    4'b0010
 `define IRDATA    4'b0101
 `define IWDATA    4'b0110
+`define IFLAGS    4'b1110
+`define IBYPASS   4'b1111
 
 

@@ -151,11 +151,12 @@ int tap_reset(void);
 int runtest5(void);
 int runtest(int n);
 int scan_dr_int(unsigned int val, int bits);
-int program_fpga(char *fname, int filetype, int device_index);
+int program_fpga(char *fname, int filetype, int device_index, int yes);
+void send_residual(char *packbuf, char *dst);
 int serve_alone(char *msg);
 int client(void);
 int server(void);
-int usercode(void);
+int usercode(char *uparams);
 #ifdef __MINGW32__
 int windows_sleep(unsigned int useconds);
 #endif

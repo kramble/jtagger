@@ -436,7 +436,7 @@ static char *test_scan_dr_int_expect;	// TESTING see test_scan_dr_int()
 
 int scan_dr_int(unsigned int val, int bits)
 {
-	// Requires entry from RUN/TEST, exits in DRSHIFT mode (I think, TODO CHECK)
+	// Requires entry from PAUSE_IR, exits in RUN_IDLE
 	// Require a minimum of 4 bits since using hub scan as template, the final two
 	// bits needing special handing due to JTAG mode change
 
@@ -741,7 +741,7 @@ static int init_fpga(int *device_index)
 
 static void usage(void)
 {
-	printf("Usage: jtagger --help -v -p filename.svf -r filename.rbf\n");
+	printf("Usage: jtagger --help -v -y -p filename.svf -r filename.rbf -u params\n");
 }
 
 static void help(void)
@@ -759,6 +759,8 @@ static void help(void)
 "-s communicates with a separate jtag server (see below).\n"
 "-p will program a .svf file (default %s), likely BUGGY (use -r instead)\n"
 "-r will program a .rbf file (default %s), must not be compressed.\n"
+"-y autoconfirm programming\n"
+"-u pass string to usercode (additional parameters)\n"
 "NB only Altera/Intel Quartus .svf programming files are supported as the svf\n"
 "parsing is very crude, tested on Quartus 10.1 (other versions may not work).\n\n"
 
@@ -795,8 +797,10 @@ int main (int argc, char **argv)
 
 	// Process command line. TODO use getopt
 	int verbose = 0;
+	int yes = 0;
 	int filetype = FILETYPE_NONE;
 	char *fname = NULL;
+	char *uparams = NULL;
 
 	while (argc > 1)
 	{
@@ -826,6 +830,14 @@ int main (int argc, char **argv)
 			continue;
 		}
 
+		if (!strcmp(argv[1], "-y"))
+		{
+			yes = 1;
+			argc--;
+			argv++;
+			continue;
+		}
+
 		if (!strncmp(argv[1], "-p", 2) || !strncmp(argv[1], "-r", 2))
 		{
 			if (filetype)
@@ -849,6 +861,22 @@ int main (int argc, char **argv)
 			else if (argc > 2)		// filename is next option
 			{
 				fname = argv[2];
+				argc--;
+				argv++;
+				// decrement again below
+			}
+			argc--;
+			argv++;
+			continue;
+		}
+
+		if (!strncmp(argv[1], "-u", 2))
+		{
+			if (argv[1][2])			// a character following u indicates concatenated parameters
+				uparams = argv[1]+2;
+			else if (argc > 2)		// params is next option
+			{
+				uparams = argv[2];
 				argc--;
 				argv++;
 				// decrement again below
@@ -900,7 +928,7 @@ int main (int argc, char **argv)
 		}
 
 		if (!ret)
-			return (program_fpga(fname, filetype, device_index));
+			return (program_fpga(fname, filetype, device_index, yes));
 
 		return ret;
 	}
@@ -959,7 +987,7 @@ int main (int argc, char **argv)
 		}
 		else
 		{
-			ret = usercode();
+			ret = usercode(uparams);
 			// printf("jtagger exit with status %d\n", ret);
 			break;	// Omit this break in order to to loop regardless of successful result
 		}

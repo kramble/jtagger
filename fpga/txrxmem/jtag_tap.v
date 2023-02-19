@@ -9,6 +9,7 @@ module jtag_tap (
 
         output wire                 capture_dr,
         output wire                 shift_dr,
+        output wire                 exit1_dr,
         output wire                 update_dr
     );
 
@@ -23,7 +24,7 @@ module jtag_tap (
 
         .virtual_state_cdr  (capture_dr),
         .virtual_state_cir  ( ),
-        .virtual_state_e1dr ( ),
+        .virtual_state_e1dr (exit1_dr),
         .virtual_state_e2dr ( ),
         .virtual_state_pdr  ( ),
         .virtual_state_sdr  (shift_dr),
@@ -58,7 +59,7 @@ module jtag_tap (
 	initial begin
 	// Approximate timings, TODO use more accurate sequences (probably will only
 	// fix this if the decvice does not behave as expected on jtagger testing)
-
+	#	 6	// Sync signals to (just after) tck rising edge
 	#   10 rir = `IIDENT;
 	#   10 rcapture_dr = 1;
 	#   10 rcapture_dr = 0;
@@ -89,6 +90,7 @@ module jtag_tap (
 	#    0 rupdate_dr = 1;
 	#   10 rupdate_dr = 0;
 
+	// this needs to be a bit more accurate since we are counting shifts
 	#  110 rir = `IWDATA;
 	#   10 rcapture_dr = 1;
 	#   10 rcapture_dr = 0;
@@ -97,8 +99,8 @@ module jtag_tap (
 	#   80 rtdi = 0;
 	#   20 rtdi = 1;
 	#   20 rtdi = 0;
-	#  250 rshift_dr = 0;
-	#    0 rupdate_dr = 1;
+	#  120 rshift_dr = 0;
+	#   30 rupdate_dr = 1;
 	#   10 rupdate_dr = 0;
 
 	#  110 rir = `IRDATA;

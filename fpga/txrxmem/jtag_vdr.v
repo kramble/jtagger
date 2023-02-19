@@ -17,28 +17,40 @@ module jtag_vdr
 		input				waddr_enable,
 		input				rdata_enable,
 		input				wdata_enable,
+		input				flags_enable,
+		output reg			wram_enable,
 
         input [`DR_LENGTH-1:0]  	rdata_in,
-        output reg [`DR_LENGTH-1:0]	wdata_out = 0,
-        // output reg [`DR_LENGTH-1:0]	raddr_out = 'h99,	// Have LEDs display something at init so show bitstream has loaded
-        output     [`DR_LENGTH-1:0]	raddr_out,				// The above does not seem to work, see DEBUGGING LEDs below
-        output reg [`DR_LENGTH-1:0]	waddr_out = 0
+        output reg [`DR_LENGTH-1:0]	wdata_out = 0,	// BEWARE quartus 10.1 ignores port initialization values
+        output     [`DR_LENGTH-1:0]	raddr_out,
+        output reg [`DR_LENGTH-1:0]	waddr_out = 0,
+        output     [`DR_LENGTH-1:0]	flags_out
     );
 
-	reg [`DR_LENGTH-1:0] raddr_reg = 'h99;	// DEBUGGING LEDs ... this DOES work, it seems Quartus 10.1 ignores the
-	assign raddr_out = raddr_reg;			// initial value for port registers
+	reg [`DR_LENGTH-1:0] raddr_reg = 0;		// It seems Quartus 10.1 ignores the initial value for port registers
+	assign raddr_out = raddr_reg;
+
+	reg [`DR_LENGTH-1:0] flags_reg = 'h99;	// Initial LED value
+	assign flags_out = flags_reg;
+
+    assign vdr_tdo = vdr[0];
 
     reg [`DR_LENGTH-1:0] vdr = 0;
 
-	// Shift register adjusts timing of auto increment (TODO experiment with SR length)
+	// Shift register adjusts timing of auto increment and ram write strobe
 	reg [7:0] rdata_enable_d = 0;
 	reg [7:0] wdata_enable_d = 0;
 
 	// Flags control auto increment (disabled after address update, enabled after data update/capture)
+	// May not actually be needed since increment is timed from capture/update (TODO try removing)
 	reg read_increment = 0;
 	reg write_increment = 0;
 
-    assign vdr_tdo = vdr[0];
+	// Alternative write strategy based on count of dr_strobe (allows continuous shifting for speed)
+	reg [4:0] wr_count = 0;					// NB wraps at 31 by design
+	reg latch_wdata_reg = 0;
+	// wire latch_wdata = update_dr;		// normal
+	wire latch_wdata = latch_wdata_reg;		// fast count
 
     always @(posedge tck) 
     begin
@@ -56,6 +68,9 @@ module jtag_vdr
 			read_increment <= 1;
 		end
 
+        if (update_dr && flags_enable)
+            flags_reg <= vdr[`DR_LENGTH-1:0];
+
         if (update_dr && waddr_enable)
 		begin
             waddr_out <= vdr[`DR_LENGTH-1:0];
@@ -66,24 +81,34 @@ module jtag_vdr
 
         if (update_dr && raddr_enable)
 		begin
-            // raddr_out <= vdr[`DR_LENGTH-1:0];		// DEBUGGING LEDs
             raddr_reg <= vdr[`DR_LENGTH-1:0];
 			read_increment <= 0;
 		end			
         else if (rdata_enable_d[6] & !rdata_enable_d[7] & read_increment)
-			// raddr_out <= raddr_out + 1;
-			raddr_reg <= raddr_reg + 1;					// DEBUGGING LEDs
+			raddr_reg <= raddr_reg + 1;
 
-        if (update_dr && wdata_enable)
+        if (latch_wdata && wdata_enable)
 		begin
             wdata_out <= vdr[`DR_LENGTH-1:0];
 			write_increment <= 1;
 		end			
 
+		// Ram write strobe is timed off tck to ensure correct relationship with address/data
+		wram_enable <= wdata_enable_d[4] & !wdata_enable_d[5];
+
 		// Auto increment address. This delays the strobes until after read/write has occurred
 		// in system.v NB these are named "data" since they occur on IRDATA and IRDATA instructions,
 		rdata_enable_d <= { rdata_enable_d[6:0], capture_dr & rdata_enable };
-		wdata_enable_d <= { wdata_enable_d[6:0], update_dr & wdata_enable };
+		wdata_enable_d <= { wdata_enable_d[6:0], latch_wdata & wdata_enable };
+
+		// if ((latch_wdata && shift_dr && wdata_enable) || !wdata_enable)	// !wdata_enable is to resync (in case sync is lost)
+		if (!wdata_enable)	// resync when not IWDATA (NB in normal shift operation counter wraps to 0 by design)
+			wr_count <= 0;
+		else if (shift_dr && wdata_enable)
+			wr_count <= wr_count + 1;
+
+		latch_wdata_reg <= (wr_count == 31);
+
     end
 
 

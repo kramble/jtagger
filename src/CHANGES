@@ -38,6 +38,11 @@ prebuilt version. It works, see README_Win32.txt for details.
 Writes and reads to fpga block ram. It's a little slow, but there is a lot
 of scope to speed it up via buffering and bulk transfer. Slightly buggy
 (see notes in usercode.c) but a very nice demo nonetheless.
+
+2023-02-17 Bugfixed txrxmem, added FAST bulk upload
+
+FAST is an understatement. It uploads at the same speed as the programming
+function (approx 300Kbytes/sec), try it via ./jtagger -us
  
 NEWS
 Looking ahead ... bug fixes and speed improvements for the txrxmem demo.
