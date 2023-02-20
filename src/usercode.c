@@ -1,6 +1,11 @@
 /* usercode.c - custom interface to fpga
 
-A bit repetitive, TODO write functions for common steps.
+TODO ...
+Write (more) functions for common steps.
+Add a bulk read function (may need verilog changes).
+Fix the flags (lazy decoding leaves little scope for more functionality).
+Add a softcore CPU and control it via flags.
+Add jtag uart functionality (hosting).
 
 */
 
@@ -10,14 +15,18 @@ A bit repetitive, TODO write functions for common steps.
 // This is a weird one as PRIx64 expands to "lx" not "llx" on 64 bit linux gcc
 #undef PRIx64
 #define PRIx64 "llx"
+#undef PRId64
+#define PRId64 "lld"
 #endif
 
 // Instruction Register opcodes, see fpga/txrxmem/defines.v
+#define IIDENT	0
 #define IRADDR	1
 #define IWADDR	2
 #define IRDATA	5
 #define IWDATA	6
 #define IFLAGS	14
+#define IBYPASS	15	(actually anything except the above acts as a bypass opcode)
 
 // Debug flags (sets LED source), see fpga/txrxmem/system.v
 #define FLAGS_DEBUG  0x100
@@ -346,24 +355,15 @@ static void bulk_upload(char *mem, unsigned int len)
 
 	// Bulk upload is based on scan_dr_int(vdr, vrlen) and parse_rbf()
 	// Scans data non-stop (does not pass through DRUPDATE), see jtag_vdr.v
-
-	// Copied verbatim from parse_rbf()
 	// NB unlike scan_dr_int() we do not set the readback flag
 
 	char packbuf[BUF_LEN];	// NB BUF_LEN is message buffer
 	*packbuf = 0;			// Set as empty
 
-#if 0
-	// This does not work properly (sends garbage)
-	strcpy (packbuf, "WX2e2f2e2f2e2f2c2d2c2d2c2c");	// IRPAUSE to DRSHIFT
-	char *dst = packbuf + strlen(packbuf);
-#else
-	// Do it EXACTLY like parse_rbf()
 	respond("WX2e2f2e2f2e2f2c2d2c2d2c2cZ");	// IRPAUSE to DRSHIFT
 	char *dst = packbuf;
 	strcpy(dst, "WX");
 	dst += 2;
-#endif
 
 	char *p = mem;
 	int byte = 0;
@@ -410,9 +410,6 @@ static void bulk_upload(char *mem, unsigned int len)
 
 int fpga_txrxmem(char *uparams)
 {
-	// TODO speed improvements eg buffer the FTDI I/O and avoid readback (clear the read flag in the write data),
-	// use bulk byte loads instead of bitbang
-
 	printf("\nExercising fpga/txrxmem\n\n");
 
 	tap_reset();
@@ -496,37 +493,32 @@ int fpga_txrxmem(char *uparams)
 
 	vdr_ret = scan_vir_vdr(4, 32, IWADDR, 0x0);	// Set write address 0
 
-	int size = MEMSIZE * sizeof(int);
+	int membytes = MEMSIZE * sizeof(int);	// BEWARE is int always 4 bytes? Perhaps not in windows bit? TODO CHECK.
 
 	// Upload is FAST as we're continuously shifting (EXACTLY the same as programming the bitstream)
 
 	if (uparams && strchr(uparams, 's'))
 	{
 		int iter = 100;
-		printf("\nBulk upload %d bytes speedtest %d iterations...\n", size, iter);
+		printf("\nBulk upload %d bytes speedtest %d iterations...\n", membytes, iter);
 		time_t tstart, tfinish;
 		time(&tstart);
 		for (int i=0; i<iter; i++)	// NOT while() since want iter below
 		{
 			vdr_ret = scan_vir_vdr(4, 32, IWADDR, 0x0);	// Set write address 0
-			bulk_upload((char*)mem, size);	// NB size is in bytes
+			bulk_upload((char*)mem, membytes);	// NB size is in bytes
 			if (i%10 == 9)
 				printf("done %d iterations of %d\n", i+1, iter);
 		}
 		time(&tfinish);
-// Don't know if this is a bug or not, but it's annoying
-#ifndef __MINGW32__
-#undef PRId64
-#define PRId64 "lld"
-#endif
 		printf("... done %" PRId64 " bytes in %" PRId64 " seconds = %"  PRId64 " bytes/sec\n\n",
-			 iter * (long long) size, (long long)(tfinish - tstart),
-			 iter * (long long) size / (long long)(tfinish - tstart));
+			 iter * (long long) membytes, (long long)(tfinish - tstart),
+			 iter * (long long) membytes / (long long)(tfinish - tstart));
 	}
 	else
 	{
-		printf("\nBulk upload %d bytes...\n", size);
-		bulk_upload((char*)mem, size);	// NB size is in bytes
+		printf("\nBulk upload %d bytes...\n", membytes);
+		bulk_upload((char*)mem, membytes);	// NB size is in bytes
 		printf("... done\n\n");
 	}
 	
@@ -552,6 +544,64 @@ int fpga_txrxmem(char *uparams)
 				vdr_ret == n ? "MATCH" : "BAD");
 	}
 
+	if (uparams && strchr(uparams, 't'))
+	{
+		printf("\nStress test, CONTROL-C to quit\n");	// TODO add signal handler and tap_reset() on quit
+
+		int coverage[MEMSIZE] = { 0 };
+
+		for (int iter = 1; /* empty */ ; iter++)
+		{
+			// uncomment if NOT using chatty coverage print below
+			// printf("Iteration %d\r", iter);	// \r not \n is deliberate
+			// fflush(stdout);
+
+			srand(iter);	// Send different data each time
+
+			for (int i=0; i<MEMSIZE; i++)
+				mem[i] = rand();
+
+			vdr_ret = scan_vir_vdr(4, 32, IWADDR, 0x0);	// Set write address 0
+
+			bulk_upload((char*)mem, membytes);	// NB size is in bytes
+			
+			vdr_ret = scan_vir_vdr(4, 32, IRADDR, 0x0);	// Set read address 0
+
+			count = 1024;	// Reads per iteration (checking count/MEMSIZE = 1/16 of total locations)
+
+			for (int i=0; i<=count; i++)
+			{
+				int addr = rand() & 0x3FFF;	// random address (different each iteration since seed changes above)
+				coverage[addr]++;
+				unsigned int n = mem[addr];
+				vdr_ret = scan_vir_vdr(4, 32, IRADDR, addr);// Set read address
+				vdr_ret = scan_vir_vdr(4, 32, IRDATA, 0);	// Read value
+				// if (iter==3 && i==123)	// Force a failure to confirm check is working
+				//	vdr_ret++;
+				if (vdr_ret != n)
+				{
+					printf("\nFAIL at addr %04x returned %08" PRIx64 " expected %08x %s\n", addr, vdr_ret, n,
+							vdr_ret == n ? "MATCH" : "BAD");
+					tap_reset();
+					exit(1);
+				}
+			}
+
+			// if (iter == 1 || iter%10 == 0)	// uncomment for less chat
+			{
+				int count = 0;
+				for (int i=0; i<=MEMSIZE; i++)
+					if (coverage[i])
+						count++;
+				// NOTE coverage just indicates what percentage of memory locations have been read back.
+				// It is not an indication of the "fullness" of the stress test as we're testing JTAG I/O
+				// and not the integrity of the block RAM! It takes 38 iterations for 90%, 49 for 95%
+				printf("Coverage at iteration %d = %3.1f%%\n", iter, (double)((100.0*count)/MEMSIZE));
+				// continue testing				
+			}
+		}
+	}
+
 	// At exit...
 	tap_reset();
 
@@ -564,8 +614,9 @@ int usercode(char *uparams)
 
 	if (get_hub_info())
 	{
-		printf("NOT proceeding with vjtag_test()\n");
-		return 5;
+		printf("Unrecognised FPGA configuration, NOT proceeding with testing.\n");
+		printf("You should load a supported bitstream.\n");
+		return 5;	// TODO #define it
 	}
 
 	tap_reset();	// Send TAP_RESET
@@ -575,11 +626,6 @@ int usercode(char *uparams)
 	// Select VIR opcode 0 (IIDENT in fpga/txrxmem, does nothing in fpga/vjtag)
 
 	unsigned long long id = 0;
-
-#define IIDENT 0	// see fpga/txrxmem/defines.v
-
-	tap_reset();
-	runtest5();
 
 	IRSHIFT_USER1();
 

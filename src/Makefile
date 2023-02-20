@@ -17,7 +17,7 @@ JTAGGEREXE = jtagger
 all: $(ALLOBJS)
 	$(CC) -o $(JTAGGEREXE) $(JTAGGEROBJS) $(LIBS)
 # Comment out the following to omit jtagserver from the build...
-	$(CC) -o $(SERVEREXE) $(SERVEROBJS) $(LIBS)
+#	$(CC) -o $(SERVEREXE) $(SERVEROBJS) $(LIBS)
 
 %.o: %.c $(HEADERS)
 	$(CC) -c $(CFLAGS) -o $@ $<

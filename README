@@ -37,20 +37,25 @@ Buiding
 You'll need the usual gcc and build tools (make). The only other dependancies are libusb-dev and
 libftdi-dev (sudo apt-install libusb-dev libftdi-dev), then just "cd src" and "make".
 CAVEAT: I haven't tried a build on a "clean" system, so YMMV. I may have missed something.
-
-You probably won't need the jtagserver executable so just rm it if it gets in the way of shell
-autocompletion (eg you're just trying to run ./jtagger), or comment it out in the Makefile.
+See src/README_Win32.txt for Windows, currently only 32 bit but that should run OK on 64 bit.
 
 Testing
 -------
 A prebuilt bitstream is supplied in fpga/vjtag so after building src you can just do
 cd ../fpga/vjtag
 ../../src/jtagger -r system.rbf
-../../src/jtagger
+../../src/jtagger			(basic test)
+
+A more comprehensive demo is txrxmem which communicates with on-chip block ram (can easily be
+integrated with a softcore CPU using a simple DMA interface)
+cd ../txrxmem
+../../src/jtagger -r system.rbf
+../../src/jtagger			(basic test)
+../../src/jtagger -u st		(upload speed and stress test)
 
 $ ./jtagger --help 
 ------------------
-Usage: jtagger --help -v -s -p filename.svf -r filename.rbf
+Usage: jtagger --help -v -y -p filename.svf -r filename.rbf
 
 A standalone jtag driver for the DE0-Nano (Quartus is not required).
 Without options, jtagger prints the chip id and checks for a virtual jtag hub.
@@ -60,21 +65,24 @@ source should be modified to support your own system requirements).
 
 OPTIONS
 -v sets verbose mode.
--s communicates with a separate jtag server (see below).
+-s communicates with a separate jtag server (DEPRECIATED).
 -p will program a .svf file (default system.svf), likely BUGGY (use -r instead)
 -r will program a .rbf file (default system.rbf), must not be compressed.
+-y autoconfirm programming
+-u pass string to usercode (additional parameters)
+
 NB only Altera/Intel Quartus .svf programming files are supported as the svf
 parsing is very crude, tested on Quartus 10.1 (other versions may not work).
+Use raw binary files (-r) instead. The -p option is likely to be removed in future
+as writing a full svf parser does not appeal to me as a good use of my time (it
+only exists because that is how the project began, rbf was added later).
 
-Jtagger was originally designed as a client/server on the presumpton of
-improved performance, however that is now deemed unneccessary. It can still be
-operated that way by starting "jtagserver" in a separate terminal window then
-running jtagger with the -s switch. Programming is considerably slower in this
-mode. The client/server employs SYSTEM V message queues (sorry) so use "ipcs"
-for troubleshooting. The message PID/lock file is ~/.jtag.socket (may need
-deleting to fix problems). It's really NOT worth bothering with client/server.
+Jtagger was originally designed as a client/server but this is now depreciated
+as the standalone functionality is much faster and less "quirky". The jtagserver
+executable is not longer built by default (edit the Makefile to reenable).
 
 Employs code from OpenOCD and OpenFPGALoader under the GPL license.
 You may find those projects more useful than jtagger which was written as a
 personal project to drive a vitual jtag hub without needing Quartus installed.
-Nevertheless, you may be pleasantly surprised at just how FAST it programs!
+Nevertheless, you may be pleasantly surprised at just how FAST it programs,
+and certainly how fast it can bulk transfer data, compared with Quartus TCL.

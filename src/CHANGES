@@ -39,13 +39,17 @@ Writes and reads to fpga block ram. It's a little slow, but there is a lot
 of scope to speed it up via buffering and bulk transfer. Slightly buggy
 (see notes in usercode.c) but a very nice demo nonetheless.
 
-2023-02-17 Bugfixed txrxmem, added FAST bulk upload
+2023-02-19 Bugfixed txrxmem, added FAST bulk upload
 
 FAST is an understatement. It uploads at the same speed as the programming
 function (approx 300Kbytes/sec), try it via ./jtagger -us
+
+2023-02-20 Added stress test -ut
+Note that usercode options can be combined eg -u wst (space is optional
+which is a quirk of my switch handling, TODO: really should use getopt)
  
 NEWS
-Looking ahead ... bug fixes and speed improvements for the txrxmem demo.
+Looking ahead ... 
 The eventual aim is to communicate with a soft-core CPU (I've successfully
 used the OpenCores Amber ARM2-compatible CPU in previous projects). This very
 likely duplicates other existing jtag uart-based code (and yes, OpenOCD), but
