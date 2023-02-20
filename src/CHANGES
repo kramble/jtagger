@@ -44,9 +44,15 @@ of scope to speed it up via buffering and bulk transfer. Slightly buggy
 FAST is an understatement. It uploads at the same speed as the programming
 function (approx 300Kbytes/sec), try it via ./jtagger -us
 
-2023-02-20 Added stress test -ut
-Note that usercode options can be combined eg -u wst (space is optional
+2023-02-20 Added stress test -ux (updated, changed option from -ut to -ux)
+Note that usercode options can be combined eg -u wsx (space is optional
 which is a quirk of my switch handling, TODO: really should use getopt)
+
+2023-02-20 Added timing test -ut
+This mode captures the sld_virtual_jtag signals into ram and reads them
+back for analysis. This identified a nasty issue with long delays when
+reading from FTDI. Fixing this should alleviate the poor read performance.
+Debug work is in progress on this.
  
 NEWS
 Looking ahead ... 

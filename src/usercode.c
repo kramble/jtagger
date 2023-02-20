@@ -19,6 +19,10 @@ Add jtag uart functionality (hosting).
 #define PRId64 "lld"
 #endif
 
+// Bitstream ientifiers
+#define CHIPID_v1 0x97d2f9ce
+#define CHIPID_v2 0x97d2f9cf
+
 // Instruction Register opcodes, see fpga/txrxmem/defines.v
 #define IIDENT	0
 #define IRADDR	1
@@ -29,11 +33,30 @@ Add jtag uart functionality (hosting).
 #define IBYPASS	15	(actually anything except the above acts as a bypass opcode)
 
 // Debug flags (sets LED source), see fpga/txrxmem/system.v
-#define FLAGS_DEBUG  0x100
-#define FLAGS_RADDR  0x200
-#define FLAGS_WADDR  0x400
-#define FLAGS_WDATA  0x800
-#define FLAGS_RDATA  0x1000
+// This is clunky due to lazy decoding in system.v, saved time then, pay for it now :-(
+
+#define FLAGS_v1_DEBUG  0x100
+#define FLAGS_v1_RADDR  0x200
+#define FLAGS_v1_WADDR  0x400
+#define FLAGS_v1_WDATA  0x800	// yeah, the order was a bit wrong too
+#define FLAGS_v1_RDATA  0x1000
+
+#define FLAGS_v2_DEBUG  0x100
+#define FLAGS_v2_RADDR  0x200
+#define FLAGS_v2_WADDR  0x300
+#define FLAGS_v2_RDATA  0x400
+#define FLAGS_v2_WDATA  0x500
+
+// These are now variables (assigned later)
+unsigned int FLAGS_DEBUG;
+unsigned int FLAGS_RADDR;
+unsigned int FLAGS_WADDR;
+unsigned int FLAGS_WDATA;
+unsigned int FLAGS_RDATA;
+
+#define FLAGS_TMODE 0x00010000
+
+#define MEMSIZE 16384	// 32 bit words
 
 static int print_nibble(void)
 {
@@ -408,7 +431,7 @@ static void bulk_upload(char *mem, unsigned int len)
 	tap_reset();
 }
 
-int fpga_txrxmem(char *uparams)
+int fpga_txrxmem(char *uparams, unsigned int chipid)
 {
 	printf("\nExercising fpga/txrxmem\n\n");
 
@@ -483,7 +506,6 @@ int fpga_txrxmem(char *uparams)
 	// give speeds similar to the RBF programming, vis 700kB in 2 seconds... and it DOES !!!!
 
 	// Test bulk uploading
-#define MEMSIZE 16384	// 32 bit words
 	unsigned int mem[MEMSIZE];
 
 	srand(2);	// NB different since we alredy have srand(1) data loaded
@@ -544,7 +566,7 @@ int fpga_txrxmem(char *uparams)
 				vdr_ret == n ? "MATCH" : "BAD");
 	}
 
-	if (uparams && strchr(uparams, 't'))
+	if (uparams && strchr(uparams, 'x'))
 	{
 		printf("\nStress test, CONTROL-C to quit\n");	// TODO add signal handler and tap_reset() on quit
 
@@ -608,6 +630,99 @@ int fpga_txrxmem(char *uparams)
 	return 0;
 }
 
+int fpga_txrxmem_timing(char *uparams, unsigned int chipid)
+{
+	printf("\nRunning fpga/txrxmem TIMING TEST\n");
+
+	if (uparams && strcmp(uparams,"t"))
+		printf("WARNING all other test options are ignored in this mode\n");
+
+	printf("\n");
+
+	if (chipid != CHIPID_v2)
+		DOABORT("unexpected chipid");
+
+	tap_reset();
+	runtest5();
+
+	unsigned long long vdr_ret = 0;
+
+	// Set the timimg test mode and LEDs to debug (4 bits waddr, wdata)
+	vdr_ret = scan_vir_vdr(4, 32, IFLAGS, FLAGS_TMODE| FLAGS_DEBUG);
+
+	// All JTAG operations are now logged to ram
+	vdr_ret = scan_vir_vdr(4, 32, IRADDR, 0x0);	// Set read address 0
+
+	// TODO Add more operations here that we want to see logged eg a short bulk_upload()
+
+	// Readback the ram
+
+	// Best to redirect this to a file
+	printf("\ntime 50MHz/20nS     delta cdr sdr pdr udr tdo tdi tms tck\n");
+
+	unsigned int mem[MEMSIZE];	// Save the result in case we want to do more later
+	int addr = 0;
+	int count = 2000;
+	int prev_time = 0;
+
+	for (int i=0; i<=count; i++)
+	{
+		addr &= MEMSIZE-1;	// sanitize since using as index to mem[MEMSIZE] (BEWARE MEMSIZE must be power of 2)
+
+		vdr_ret = scan_vir_vdr(4, 32, IRDATA, 0);	// Read values (address auto increments)
+		// printf("addr %08x returned vdr %08" PRIx64 "\n", addr, vdr_ret);
+		mem[addr] = vdr_ret;
+
+		// Analyse the results (which are actually logging this readback, which is a bit meta)
+		// Write as we go, else get a looooong pause while reading from jtag
+
+		int time = mem[addr] >> 8;
+		int sigs = mem[addr] & 0xff;
+		int delta = time - prev_time;
+		if (prev_time == 0)
+			delta = 0;				// Startup (and a tiny chance of wrap around)
+		if (delta < 0)
+			delta += 0x01000000 ;	// Wrapped
+
+		printf("       %8d  %8d   %d   %d   %d   %d   %d   %d   %d   %d\n", time, delta,
+					 (sigs&(1<<7)) ? 1 : 0,
+					 (sigs&(1<<6)) ? 1 : 0,
+					 (sigs&(1<<5)) ? 1 : 0,
+					 (sigs&(1<<4)) ? 1 : 0,
+					 (sigs&(1<<3)) ? 1 : 0,
+					 (sigs&(1<<2)) ? 1 : 0,
+					 (sigs&(1<<1)) ? 1 : 0,
+					 (sigs&1) ? 1 : 0);
+
+		prev_time = time;
+		addr++;
+	}
+
+	/* CONCLUDE there are some horrible pauses, eg
+
+        2848637        21   0   1   0   0   1   0   0   0
+        2848657        20   0   1   0   0   1   0   0   1
+        2848678        21   0   1   0   0   1   0   0   0
+        2848699        21   0   1   0   0   1   0   0   1
+       12728502   9879803   0   0   0   0   0   0   1   1
+       12728523        21   0   0   0   0   0   0   1   0
+       12728565        42   0   0   0   0   0   0   0   0
+       12728586        21   0   0   0   0   0   0   0   1
+
+	9879803 * 20nS = 198mS. It's NOT caused by usleep (see common.h for debug JTAGGER_SLEEP macro) and not terminal
+	I/O since I redirected to a file. Could it be FTDI read timeout? Other than those delays, tck runs at cycle time
+	of approx 8 * 20nS = 160nS = 6MHz in bulk transfer mode, 42 * 20nS = 840nS = 1.1MHz in bitbang mode.
+
+	The long pauses are the cause of the slow read performance. TODO need to get to the bottom of this.
+
+	*/
+
+	// At exit...
+	tap_reset();
+
+	return 0;
+}
+
 int usercode(char *uparams)
 {
 	printf("Starting usercode\n\n");
@@ -651,13 +766,47 @@ int usercode(char *uparams)
 
 	id = get_bitbang(len,0);
 
-
 	printf("VDR ident %08" PRIx64 "\n", id);
 
-	if (id == 0x97d2f9ce)
+	if (id == CHIPID_v1 || id == CHIPID_v2)
 	{
 		printf("Found txtxmem OK\n");
-		return fpga_txrxmem(uparams);
+
+		// chip id determines flag versions
+
+		if (id == CHIPID_v1)
+		{
+			FLAGS_DEBUG = FLAGS_v1_DEBUG;
+			FLAGS_RADDR = FLAGS_v1_RADDR;
+			FLAGS_WADDR = FLAGS_v1_WADDR;
+			FLAGS_WDATA = FLAGS_v1_WDATA;
+			FLAGS_RDATA = FLAGS_v1_RDATA;
+
+			if (uparams && strchr(uparams, 't'))
+			{
+				printf("WARNING timimg mode (-ut) is not supported for this bitstream\n");
+				printf("Please load the newer version from fpga/txrxmem/system.rbf\n");
+				JTAGGER_SLEEP(2000 * 1000);
+				// But we run the tests anyway
+			}
+			return fpga_txrxmem(uparams, id);
+		}
+
+		if (id == CHIPID_v2)
+		{
+			FLAGS_DEBUG = FLAGS_v2_DEBUG;
+			FLAGS_RADDR = FLAGS_v2_RADDR;
+			FLAGS_WADDR = FLAGS_v2_WADDR;
+			FLAGS_WDATA = FLAGS_v2_WDATA;
+			FLAGS_RDATA = FLAGS_v2_RDATA;
+
+			if (uparams && strchr(uparams, 't'))
+				return fpga_txrxmem_timing(uparams, id);
+			else
+				return fpga_txrxmem(uparams, id);
+		}
+
+		DOABORT("notreached");
 	}
 	else
 	{

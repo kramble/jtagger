@@ -60,7 +60,8 @@ module jtag_vdr
 		// Set an identifier so we can recognise this specific device configuration from jtagger
 		// Anything will do, but I used a random value (obtained from md5sum of a source file)
         if (capture_dr & ident_enable)
-            vdr       <= 32'h97d2f9ce;	// NB must use the same value in jtagger/src/usercode.c
+		//	vdr       <= 32'h97d2f9ce;	// NB must use the same value in jtagger/src/usercode.c
+			vdr       <= 32'h97d2f9cf;	// Changed flags behavoir so change id
 
         if (capture_dr & rdata_enable)
 		begin

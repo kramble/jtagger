@@ -6,27 +6,33 @@ module jtag_top (
     output  wire [`DR_LENGTH-1:0] raddr_out,
     output  wire [`DR_LENGTH-1:0] waddr_out,
     output  wire [`DR_LENGTH-1:0] flags_out,
+    output  wire [7:0] tapsigs_out,
 	output	wire wram_enable
 );
 
     wire [`IR_LENGTH-1:0]  ir;
 
-    wire        capture_dr, shift_dr, exit1_dr, update_dr;
+    wire        capture_dr, shift_dr, exit1_dr, pause_dr, update_dr;
     wire        tck;
     wire        tdi;
+    wire        tms; 	// For timing mode (debugging)
 
     jtag_tap
     u_jtag_tap
     (
         .tck(tck),
         .tdi(tdi),
+        .tms(tms),
         .tdo(tdo2tap),
         .ir(ir),
         .capture_dr(capture_dr),
         .shift_dr(shift_dr),
         .exit1_dr(exit1_dr),
+        .pause_dr(pause_dr),
         .update_dr(update_dr)
     );
+
+	assign tapsigs_out = { capture_dr, shift_dr, pause_dr, update_dr, tdo2tap, tdi, tms, tck };
 
     reg bypass_tdo = 0;
     always @(posedge tck)

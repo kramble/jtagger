@@ -16,7 +16,7 @@ system u (
 	$dumpfile("zsystem.vcd");
     $dumpvars(0, tb.u);
 
-	# 2500 $finish;
+	# 5000 $finish;
   end
 
   reg clk = 0;

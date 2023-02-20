@@ -34,6 +34,7 @@
 #include <sys/ipc.h>
 #include <sys/msg.h>
 #define JTAGGER_SLEEP usleep
+// #define JTAGGER_SLEEP(n) printf("\nsleep %d\n", (n)), usleep(n)	// DEBUG
 #else
 #define IPC_NOWAIT 04000
 #define ENOMSG 42

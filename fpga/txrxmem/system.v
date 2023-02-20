@@ -96,6 +96,7 @@ wire clk;
 		.raddr_out		(raddr_out),
 		.waddr_out		(waddr_out),
 		.flags_out		(flags),
+		.tapsigs_out	(tapsigs),
 		.wram_enable	(wram_enable)
     );
 
@@ -107,35 +108,48 @@ wire clk;
 	//		may be using ram for shift registers, yep all 66 M9Ks in use, see system.fitter.rpt, two of them are tiny)
 
 	reg [31:0] ram[0:16383];	// 64kB
-	reg [13:0] ram_rd_addr;
-	reg [13:0] ram_wr_addr;
-	reg [31:0] ram_wr_data;
-	reg  [7:0] debug;
+	reg [13:0] ram_rd_addr_reg = 0;
+	reg [13:0] ram_wr_addr_reg = 0;
+	reg [31:0] ram_wr_data_reg = 0;
+	reg  [7:0] debug = 0;
 
 	// Shift register adjusts timing of ram write strobe (delayed slightly wrt addr/data ensures properly syncd)
 `define WE_LEN 3
 	reg [`WE_LEN-1:0] wram_enable_d = 0;
 
-`ifndef SIM
-	assign rdata_in = ram[ram_rd_addr];
-`else
-	assign rdata_in = ~ram[ram_rd_addr];	// DEBUG use inverse to observe capture into vdr
-`endif
+// Not wanted for timing mode simulation
+//`ifndef SIM
+	assign rdata_in = ram[ram_rd_addr_reg];
+//`else
+//	assign rdata_in = ~ram[ram_rd_addr_reg];	// DEBUG use inverse to observe capture into vdr
+//`endif
 
 	wire [`DR_LENGTH-1:0] rdata_in;
 	wire [`DR_LENGTH-1:0] wdata_out;
 	wire [`DR_LENGTH-1:0] raddr_out;
 	wire [`DR_LENGTH-1:0] waddr_out;
 	wire [`DR_LENGTH-1:0] flags;
-	wire ram_write_strobe = wram_enable_d[`WE_LEN-2] & !wram_enable_d[`WE_LEN-1];
+	reg  [`DR_LENGTH-1:0] flags_d = 0;
+
+	// This could get a bit messy when flags mode changes, but we'll cope with that in usercode.c
+	wire ram_write_strobe = flags_tmode ?	wram_enable_t
+										:	wram_enable_d[`WE_LEN-2] & !wram_enable_d[`WE_LEN-1];
+
+	wire [13:0] ram_wr_addr = flags_tmode	?	ram_wr_addr_t
+											:	ram_wr_addr_reg;
+
+	wire [31:0] ram_wr_data = flags_tmode	?	{ timer[23:0] , prev_tapsigs /* tapsigs_d */ }
+											: ram_wr_data_reg;
+
 	wire wram_enable;
 
     always @(posedge clk)
 	begin
 		// Synchronize
-		ram_rd_addr <= raddr_out[13:0];
-		ram_wr_addr <= waddr_out[13:0];
-		ram_wr_data <= wdata_out;
+		ram_rd_addr_reg <= raddr_out[13:0];
+		ram_wr_addr_reg <= waddr_out[13:0];
+		ram_wr_data_reg <= wdata_out;
+		flags_d <= flags;
 
 		// Shift register synchronizes and retimes write strobe
 		wram_enable_d <= { wram_enable_d[`WE_LEN-2:0], wram_enable };
@@ -147,14 +161,54 @@ wire clk;
 			debug <= { ram_wr_addr[3:0], ram_wr_data[3:0] };
 		end
     end
-   
-	// Lazy decoding...
-	assign nano_led_ =	flags[8] ? debug :	
-						flags[9] ? raddr_out[7:0] :
-						flags[10] ? waddr_out[7:0] :
-						flags[11] ? wdata_out[7:0] :
-						flags[12] ? rdata_in[7:0] :
+
+	wire flags_debug = flags_d[10:8] == 1;
+	wire flags_raddr = flags_d[10:8] == 2;
+	wire flags_waddr = flags_d[10:8] == 3;
+	wire flags_rdata = flags_d[10:8] == 4;
+	wire flags_wdata = flags_d[10:8] == 5;
+	wire flags_tmode = flags_d[16];
+
+	assign nano_led_ =	flags_debug ? debug :	
+						flags_raddr ? raddr_out[7:0] :
+						flags_waddr ? waddr_out[7:0] :
+						flags_rdata ? wdata_out[7:0] :
+						flags_wdata ? rdata_in[7:0] :
 						flags[7:0];
+
+	// Timing test. Log JTAG signals to RAM
+	reg [`DR_LENGTH-1:0] timer = 0;
+
+	// Allocate a whole byte for tapsigs so it aligns nicely
+	wire [7:0] tapsigs;
+	reg [7:0] tapsigs_d = 0;
+	reg [7:0] prev_tapsigs = 0;
+	reg [13:0] ram_wr_addr_t = 0;
+	reg addr_increment = 0;
+	reg wram_enable_t = 0;
+
+    always @(posedge clk)
+	begin
+		timer <= timer + 1;
+		tapsigs_d <= tapsigs;
+
+		if (flags_tmode && prev_tapsigs != tapsigs_d)
+		begin
+			wram_enable_t <= 1;
+			prev_tapsigs <= tapsigs_d;
+			addr_increment <= 1;
+		end
+		else
+		begin
+			wram_enable_t <= 0;
+			addr_increment <= 0;
+		end
+
+		if (!flags_tmode)
+			ram_wr_addr_t <= 0;
+		else if (addr_increment)
+			ram_wr_addr_t <= ram_wr_addr_t + 1;
+	end
 
 `ifndef SIM
 
