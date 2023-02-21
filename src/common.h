@@ -67,6 +67,7 @@ ssize_t msgrcv(int msqid, void *msgp, size_t msgsz, long msgtyp, int msgflg);
 #define JMSG_FTDIOPEN 'J'	// J for ftdi open (j since jtag)
 #define JMSG_FTDICLOSE 'U'	// U for ftdi close (u like unjtag)
 #define JMSG_FTDISTATUS 'H'	// H for hardware status
+#define JMSG_FLUSH 'P'	// P for purge (since F is hex)
 #define JMSG_READ 'R'	// R for read from ftdi
 #define JMSG_WRITE 'W'	// W for write to ftdi
 #define JMSG_HEX 'X'	// X introduces a hex string (it is NOT an initial command letter)
@@ -126,6 +127,8 @@ extern int g_debug_log;		// Write responds to file
 // NB using global g_clientmsg so caller can access last message
 extern struct jtag_msgbuf g_clientmsg;		// See clientflushrx()
 
+extern struct timespec g_cumulative_read_time;	// DEBUG
+
 #define DEVICE_PARAMS_CHIP_ID	0
 #define DEVICE_PARAMS_IR_LENGTH 1
 #define DEVICE_PARAMS_PREAMBLE 2
@@ -137,6 +140,9 @@ extern struct jtag_msgbuf g_clientmsg;		// See clientflushrx()
 // TODO add a command line option to read parameters from a configuration file (this is why device_params
 // is a pointer to the parameter array static_device_params in devices.c, so it can be overriden).
 extern unsigned int (*device_params)[DEVICE_PARAMS_MAXINDEX+1];		// See devices.c
+
+#define NOREADMODE 0		// scan_dr_int() read parameter
+#define READMODE 1
 
 // Prototypes
 void doabort(const char *func, char *s);
@@ -150,8 +156,13 @@ int clientflushrx(void);
 int io_check(void);
 int tap_reset(void);
 int runtest5(void);
+void IRSHIFT_USER0(void);
+void IRSHIFT_USER1(void);
 int runtest(int n);
-int scan_dr_int(unsigned int val, int bits);
+int scan_dr_int(unsigned int val, int bits, int read);
+long long unsigned scan_vir_vdr(unsigned int irlen, unsigned int vrlen, unsigned int vir, unsigned int vdr, int read);
+int print_nibble(void);
+unsigned long long get_bitbang(unsigned int len, unsigned int shift);
 int program_fpga(char *fname, int filetype, int device_index, int yes);
 void send_residual(char *packbuf, char *dst);
 int serve_alone(char *msg);

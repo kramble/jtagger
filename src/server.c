@@ -11,6 +11,10 @@ Uses ublast_access_ftdi from openocd for communication with Altera USB Blaster
 #include "common.h"
 #include <ftdi.h>		// For driver_status()
 
+#ifndef __CYGWIN__
+#define WANT_CLOCK_GETTIME
+#endif
+
 // BEWARE the server process and jtagger process have INDEPENDENT versions of info (since they
 // are separate processes). So data must be copied between them at the message level.
 // NB info.drv is used ONLY by server (jtagger does not communicate directly with FTDI)
@@ -31,6 +35,79 @@ static struct ublast_info info = {
 	// is also listed in .data). The above values are possibly stored in .data (see objdump -s -j.data server
 	// which shows fb090160 at offset 8040(YMMV))
 };
+
+struct timespec g_cumulative_read_time;	// Accessed from usercode.c
+
+#ifdef WANT_CLOCK_GETTIME
+// https://stackoverflow.com/questions/53708076/what-is-the-proper-way-to-use-clock-gettime
+
+enum { NS_PER_SECOND = 1000000000 };
+
+#if 0
+void sub_timespec(struct timespec t1, struct timespec t2, struct timespec *td)
+{
+    td->tv_nsec = t2.tv_nsec - t1.tv_nsec;
+    td->tv_sec  = t2.tv_sec - t1.tv_sec;
+    if (td->tv_sec > 0 && td->tv_nsec < 0)
+    {
+        td->tv_nsec += NS_PER_SECOND;
+        td->tv_sec--;
+    }
+    else if (td->tv_sec < 0 && td->tv_nsec > 0)
+    {
+        td->tv_nsec -= NS_PER_SECOND;
+        td->tv_sec++;
+    }
+}
+#endif
+
+void sub_timespec(struct timespec t1, struct timespec t2, struct timespec *td)
+{
+	struct timespec temp;	// Allow output to be same as input
+    temp.tv_nsec = t2.tv_nsec - t1.tv_nsec;
+    temp.tv_sec  = t2.tv_sec - t1.tv_sec;
+    if (temp.tv_sec > 0 && temp.tv_nsec < 0)
+    {
+        temp.tv_nsec += NS_PER_SECOND;
+        temp.tv_sec--;
+    }
+    else if (temp.tv_sec < 0 && temp.tv_nsec > 0)
+    {
+        temp.tv_nsec -= NS_PER_SECOND;
+        temp.tv_sec++;
+    }
+    td->tv_sec = temp.tv_sec;
+    td->tv_nsec = temp.tv_nsec;
+}
+
+void add_timespec(struct timespec t1, struct timespec t2, struct timespec *td)
+{
+	struct timespec temp;	// Allow output to be same as input
+    temp.tv_nsec = t2.tv_nsec + t1.tv_nsec;
+    temp.tv_sec  = t2.tv_sec + t1.tv_sec;
+    if (temp.tv_nsec >= NS_PER_SECOND)
+    {
+        temp.tv_nsec -= NS_PER_SECOND;
+        temp.tv_sec++;
+    }
+    td->tv_sec = temp.tv_sec;
+    td->tv_nsec = temp.tv_nsec;	
+}
+
+#if 0
+int test_gettime(void)
+{
+    struct timespec start, finish, delta;
+    clock_gettime(CLOCK_REALTIME, &start);
+    sleep(1);
+    clock_gettime(CLOCK_REALTIME, &finish);
+    sub_timespec(start, finish, &delta);
+    printf("%d.%.9ld\n", (int)delta.tv_sec, delta.tv_nsec);
+    return 0;
+}
+#endif
+
+#endif // WANT_CLOCK_GETTIME
 
 static int initftdi(void)
 {
@@ -92,6 +169,41 @@ static int driver_status(void)
 						((ftdic->bitbang_enabled & 0xff) << 16) |
 						(ftdic->readbuffer_remaining & 0x0000ffff);
 	return ret;
+}
+
+static int flush_write()
+{
+	uint32_t bytes_written = 0;
+	// printf("FLUSH %d\n", info.bufidx);
+
+	if (!(info.drv && info.drv->open))
+		return -1;			// Not open
+
+	if (info.bufidx == 0)	// Nothing to write
+		return 0;
+
+	int ret = info.drv->write(info.drv, info.buf, info.bufidx, &bytes_written);
+	if (ret || bytes_written != info.bufidx)
+	{
+		printf("write: ERROR ret %d or bytes_written %u != info.bufidx %d\n",
+#ifdef __CYGWIN__
+					ret, (unsigned int)bytes_written, info.bufidx);
+#else
+					ret, (unsigned int)bytes_written, info.bufidx);
+#endif
+		// respond("NWZ");	// Caller responds
+		g_server_status |= JSTA_WERROR;
+		info.bufidx = 0;
+		return -1;
+	}
+	else
+	{
+		// respond("KWZ");	// Caller responds
+		g_server_status &= ~JSTA_WERROR;
+		info.bufidx = 0;
+		return 0;
+	}
+	return 0;
 }
 
 static int handle_message(char *s)
@@ -161,6 +273,7 @@ static int handle_message(char *s)
 	case JMSG_FTDIOPEN :
 		{
 			// No checks, just attempt whatever client requests (may segfault!)
+			info.bufidx = 0;
 			if (initftdi())
 			{
 				respond("NJZ");
@@ -232,16 +345,30 @@ static int handle_message(char *s)
 
 	case JMSG_WRITE :
 		{
-			int ret = -1;
-			uint32_t bytes_written = 0;		// return value from info.drv->write()
-			if (parse_hex(s, info.buf, &info.bufidx))
+			int flushret = 0;	// NB default to success
+			uint8_t *p = info.buf;
+			if (info.bufidx)
+			{
+				// Check space (converted hex will always be less than half of string size due to WX..Z)
+				if (strlen(s) > (sizeof(info.buf) - info.bufidx) / 2)
+					flushret = flush_write();
+
+				p += info.bufidx;
+			}
+
+			int len;
+			if (parse_hex(s, p, &len))
 			{
 				printf("write: parse_hex ERROR\n");
 				respond("NWZ");
 				g_server_status &= ~JSTA_WERROR;
 			}
+
+			info.bufidx += len;
+#if 0
 			else if (info.drv && info.drv->open)	// NB checking function pointer info.drv->open exists
 			{
+				uint32_t bytes_written = 0;		// return value from info.drv->write()
 				ret = info.drv->write(info.drv, info.buf, info.bufidx, &bytes_written);
 				if (ret || bytes_written != info.bufidx)
 				{
@@ -256,12 +383,25 @@ static int handle_message(char *s)
 					g_server_status &= ~JSTA_WERROR;
 				}
 			}
+#endif
+			if (flushret)
+			{
+				respond("NWZ");
+				g_server_status |= JSTA_WERROR;
+			}
+			else
+			{
+				respond("KWZ");
+				g_server_status &= ~JSTA_WERROR;
+			}
+#if 0
 			else
 			{
 				printf("write: info not initialized\n");
 				respond("NWZ");
 				g_server_status &= ~JSTA_WERROR;
 			}
+#endif
 			break;
 		}
 
@@ -270,6 +410,8 @@ static int handle_message(char *s)
 		// where the meaning of the data depends on the mode (see notes there). This should be handled by
 		// jtagger.c so nothing to do here.
 		{
+			flush_write();	// TODO handle error
+
 			// Get size from message "RXnnnnZ"
 			if (s[1] != JMSG_HEX)
 			{
@@ -305,15 +447,35 @@ static int handle_message(char *s)
 			uint32_t bytes_read = 0;		// return value from info.drv->read()
 			if (info.drv && info.drv->open)	// NB checking function pointer info.drv->open exists
 			{
+
+#ifdef WANT_CLOCK_GETTIME
+			    struct timespec start, finish, delta;	// DEBUG long pauses
+
+			    clock_gettime(CLOCK_MONOTONIC, &start);
+#endif
 				ret = info.drv->read(info.drv, info.buf, info.bufidx, &bytes_read);
 				if (ret)
 				{
-					printf("read: ERROR ret %d bytes_read %d\n", ret, bytes_read);
+#ifdef __CYGWIN__
+					printf("read: ERROR ret %d bytes_read %u\n", ret, (unsigned int)bytes_read);
+#else
+					printf("read: ERROR ret %d bytes_read %u\n", ret, bytes_read);
+#endif
 					respond("NRZ");
 					g_server_status |= JSTA_RERROR;
 				}
 				else
 				{
+#ifdef WANT_CLOCK_GETTIME
+				    clock_gettime(CLOCK_MONOTONIC, &finish);
+    				sub_timespec(start, finish, &delta);
+    				add_timespec(g_cumulative_read_time, delta, &g_cumulative_read_time);
+					if (delta.tv_sec > 0 || delta.tv_nsec > (long)(0.1L * NS_PER_SECOND))	// 0.1 second reporting threshold
+					    printf("FTDI read %d.%.9" PRId64 " seconds cumulative %d.%.9" PRId64 " seconds\n",
+								(int)delta.tv_sec, (int64_t)delta.tv_nsec,
+								(int)g_cumulative_read_time.tv_sec, (int64_t)g_cumulative_read_time.tv_nsec);
+#endif
+
 					char str[MSGBUFLEN];
 					char *hex = hexdump(info.buf, bytes_read);
 					strcpy (str, "KRX");
@@ -323,7 +485,11 @@ static int handle_message(char *s)
 
 					// DEBUG (see note above about the meaning of the data, vis byte vs bit)
 					if (!g_silent)
+#ifdef __CYGWIN__
+						printf("read: %d bytes hex %s\n", (unsigned int)bytes_read, hex);
+#else
 						printf("read: %d bytes hex %s\n", bytes_read, hex);
+#endif
 
 					if (hex)
 						free(hex);
@@ -336,6 +502,18 @@ static int handle_message(char *s)
 				respond("NRZ");
 				g_server_status &= ~JSTA_RERROR;
 			}
+
+			info.bufidx = 0;	// Since we used it for temporary storage above
+			break;
+		}
+
+	case JMSG_FLUSH :
+		{
+			int ret = flush_write();
+			if (ret)
+				respond("NPZ");
+			else
+				respond("KPZ");
 			break;
 		}
 

@@ -347,7 +347,7 @@ int respond(char *s)
 	msg.mtext[0] = g_sequence;
 	strncpy(msg.mtext+1, s, sizeof(msg.mtext)-1);	// BEWARE max length string is NOT terminated
 
-#if 1	// DEBUG
+#if 0	// DEBUG
 	if (!g_silent)
 	{
 		char printbuf[64];

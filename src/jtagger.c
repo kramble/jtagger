@@ -304,9 +304,13 @@ static void ublast_initial_wipeout(void)
 	
 	// Send it twice (see note above) ... NB ublast_buf_write() calls respond() so sequence prefix is applied
 	ublast_buf_write(info.buf, bytes_to_send, &retlen);
+    respond("PZ");	// Flush
+
 	if (!g_standalone)
 		JTAGGER_SLEEP(100 * MILLISECONDS);	// allow time for the FTDI I/O operation
+
 	ublast_buf_write(info.buf, bytes_to_send, &retlen);
+    respond("PZ");	// Flush
 	if (!g_standalone)
 		JTAGGER_SLEEP(100 * MILLISECONDS);
 
@@ -317,6 +321,7 @@ static void ublast_initial_wipeout(void)
 	// tap_set_state(TAP_RESET);
 
 	ublast_flush_buffer();	// MJ added this to write the TAP_RESET
+    respond("PZ");	// Flush
 
 	JTAGGER_SLEEP(100 * MILLISECONDS);
 
@@ -344,22 +349,37 @@ static void ublast_initial_wipeout(void)
 			JTAGGER_SLEEP(500 * MILLISECONDS);
 		int retmsg = io_check();
 		if (!g_silent)
-			printf("seconf flush of read buffer retmsg %08X\n", retmsg);
+			printf("second flush of read buffer retmsg %08X\n", retmsg);
 	}
 }
 
 int tap_reset(void)	// NOT static since called from program()
 {
 	// Enter TAP_RESET state (valid from any state)
-	respond("WX2e2f2e2f2e2f2e2f2e2f2e2eZ");
+    respond("WX2e2f2e2f2e2f2e2f2e2f2eZ");
+    // TMS        1   1   1   1   1
+    respond("PZ");	// Flush
 	return io_check();
 }
 
 int runtest5(void)	// NOT static since called from program()
 {
 	// Move from TAP_RESET to RUN/IDLE (NB all openocd sequences assume RUN/IDLE as start point)
-	respond("WX2c2d2c2d2c2d2c2d2c2d2cZ");
+    respond("WX2c2d2c2d2c2d2c2d2c2d2cZ");
+    // TMS        0   0   0   0   0
 	return io_check();
+}
+
+void IRSHIFT_USER0(void)	// Select VDR, no readback, entry RUNIDLE exit PAUSEIR 
+{
+    respond("WX2e2f2e2f2c2d2c2d2c810c2c2d2e2f2c2d2cZ");	// IRSHIFT USER0 0x0c
+    // TMS        1   1   0   0 data    0   1   0 (NB 2 extra tdi=0 shifts after data)
+}
+
+void IRSHIFT_USER1(void)	// Select VIR, no readback, entry RUNIDLE exit PAUSEIR
+{
+    respond("WX2e2f2e2f2c2d2c2d2c810e2c2d2e2f2c2d2cZ");	// IRSHIFT USER1 0x0e
+    // TMS        1   1   0   0 data    0   1   0 (NB 2 extra tdi=0 shifts after data)
 }
 
 int runtest(int n)	// NOT static since called from program()
@@ -434,11 +454,12 @@ int runtest(int n)	// NOT static since called from program()
 static char *test_scan_dr_int_expect;	// TESTING see test_scan_dr_int()
 #endif
 
-int scan_dr_int(unsigned int val, int bits)
+int scan_dr_int(unsigned int val, int bits, int read)
 {
-	// Requires entry from PAUSE_IR, exits in RUN_IDLE
+	// Requires entry from PAUSE_IR, exits in RUNIDLE (WRONG actually EXIT1DR, TODO fix)
 	// Require a minimum of 4 bits since using hub scan as template, the final two
 	// bits needing special handing due to JTAG mode change
+	// NB all done in bitbang mode (TODO use byte mode)
 
 	if (bits < 4 || bits > 64)
 	{
@@ -446,18 +467,21 @@ int scan_dr_int(unsigned int val, int bits)
 		DOABORT ("invalid bits");
 	}
 
-	// Construct (5 bit example) "WX2e2f2e2f2e2f2c2d2c2d2c2c6d2c6d2c6d2c6d2e7f3eZ");
+    // Construct (5 bit example) "WX2e2f2e2f2e2f2c2d2c2d2c2c6d2c6d2c6d2c6d2e7f3eZ");
+    //                       TMS       1   1   1   0   0     0   0   0   0   1
+    //                                  capturedr->^   ^<-shiftdr   exit1dr->^ (needs extra TMS=1,0 to RUNIDLE)
 
-	char str[1024];	// Plenty for 32 bits (4 char per bit, plus leadin/tailout)
+	char str[1024];	// Plenty for 64 bits (4 char per bit, plus leadin/tailout)
 
 	char s[5];		// Construction zone
 	s[4] = 0;
 
-	strcpy (str, "WX2e2f2e2f2e2f2c2d2c2d2c2c");
+    strcpy (str, "WX2e2f2e2f2e2f2c2d2c2d2c");	// PAUSEIR/DR to SHIFTDR
+    // TMS             1   1   1   0   0
 
 	for (int i=0; i<bits; i++)
 	{
-		char c1 = '6';
+		char c1 = read ? '6' : '2';
 		char c2 = 'd';
 		char c3 = '2';
 		char c4 = 'c';
@@ -480,7 +504,7 @@ int scan_dr_int(unsigned int val, int bits)
 		strcat (str, s);
 	}
 
-	strcat (str, "Z");
+	strcat (str, "2e2f2c2d2cZ");	// end at RUNIDLE
 
 #ifdef TEST_SCAN_DR		// TESTING, see test_scan_dr_int()
 	if (test_scan_dr_int_expect)
@@ -502,7 +526,7 @@ static int test_scan_dr_int()
 	if (scan_dr_int(0x10, 5))
 		printf("FAIL %s\n", test_scan_dr_int_expect);
 
-	test_scan_dr_int_expect = "WX2e2f2e2f2e2f2c2d2c2d2c2c6d2c6d2c6d2e6f2eZ";	// IRPAUSE to DRSCAN 4 bits
+	test_scan_dr_int_expect = "WX2e2f2e2f2e2f2c2d2c2d2c2c6d2c6d2c6d2e6f2eZ";	// PAUSEIR to DRSCAN 4 bits
 	if (scan_dr_int(0, 4))
 		printf("FAIL %s\n", test_scan_dr_int_expect);
 
@@ -511,6 +535,100 @@ static int test_scan_dr_int()
 	return 0;
 }
 #endif
+
+long long unsigned scan_vir_vdr(unsigned int irlen, unsigned int vrlen, unsigned int vir, unsigned int vdr, int read)
+{
+	long long unsigned vdr_ret = 0;
+
+	// TODO speed this up
+
+	tap_reset();
+	runtest5();
+
+	IRSHIFT_USER1();	// entry RUNIDLE exit PAUSEIR
+
+#if 0	// We don't need this result and NOREADMODE is significantly faster
+
+	// NB need to scan 5 bits for 4 bit VIR as top bit is hub address
+	scan_dr_int(0x10 | vir, irlen+1, READMODE);	// PAUSEIR to SHIFTDR (addr=1 is MSB, hence 0x10)
+
+	clientflushrx();
+
+	respond("RX05Z");	// read 5 bytes (expect 0202020202020202, 5 zeros)
+	io_check();
+#else
+	// NB need to scan 5 bits for 4 bit VIR as top bit is hub address
+	scan_dr_int(0x10 | vir, irlen+1, NOREADMODE);	// PAUSEIR to SHIFTDR (addr=1 is MSB, hence 0x10)
+#endif
+
+	IRSHIFT_USER0();
+
+	if (read)
+	{
+		scan_dr_int(vdr, vrlen, READMODE);
+
+		clientflushrx();
+		char str[256];
+		sprintf(str, "RX%02xZ", vrlen);
+		respond(str);	// read bitbangs
+		io_check();
+
+		vdr_ret = get_bitbang(vrlen, 0);
+
+		if (!g_silent)
+			printf("scan_vir_vdr returned %08" PRIx64 "\n", (int64_t)vdr_ret);
+	}
+	else
+		scan_dr_int(vdr, vrlen, NOREADMODE);
+
+	return vdr_ret;
+}
+
+int print_nibble(void)
+{
+	// eg g_clientmsg.mtext == "9KRX02020203Z" is binary 1000 (ie reversed)
+	char *p = g_clientmsg.mtext + 4;
+	int n = 0;
+	for (int i=0; i<4; i++)
+	{
+		n >>= 1;
+		if (*p != '0')
+			printf("print_nibble: ERROR expected '0' got '%c'\n", *p);
+		int ch = *++p;
+		if (ch == '3')
+			n |= 8;
+		else if (ch != '2')
+			printf("print_nibble: ERROR expected '2|3' got '%c'\n", ch);
+		p++;
+	}
+	if (!g_silent)
+		printf("nibble 0x%x (%d)\n", n, n);
+	return n;
+}
+
+unsigned long long get_bitbang(unsigned int len, unsigned int shift)
+{
+	// same as print_nibble but for variable length
+	char *p = g_clientmsg.mtext + 4;
+	unsigned long long n = 0;
+	for (int i=0; i<len; i++)
+	{
+		n >>= 1;
+		if (*p != '0')
+			printf("print_bits: ERROR expected '0' got '%c'\n", *p);
+		int ch = *++p;
+		if (ch == '3')
+			n |= (1LL << (len-1+shift));
+		else if (ch == '2')
+			n &= ~(1LL << (len-1+shift));
+		else
+			printf("print_bits: ERROR expected '2|3' got '%c'\n", ch);
+		p++;
+	}
+	if (!g_silent)
+		printf("value 0x%" PRIx64 "\n", (int64_t) n);
+	return n;
+}
 
 static int find_device(unsigned int device_id)
 {
@@ -747,7 +865,7 @@ static void usage(void)
 static void help(void)
 {
 	printf(
-"Usage: jtagger --help -v -s -p filename.svf -r filename.rbf\n\n"
+"Usage: jtagger --help -v -s -p filename.svf -r filename.rbf -u params\n\n"
 "A standalone jtag driver for the DE0-Nano (Quartus is not required).\n"
 "Without options, jtagger prints the chip id and checks for a virtual jtag hub.\n"
 "If a hub is found, the first instance is listed and some I/O is attempted.\n"
@@ -756,7 +874,7 @@ static void help(void)
 
 "OPTIONS\n"
 "-v sets verbose mode.\n"
-"-s communicates with a separate jtag server (see below).\n"
+"-s communicates with a separate jtag server (DEPRECIATED).\n"
 "-p will program a .svf file (default %s), likely BUGGY (use -r instead)\n"
 "-r will program a .rbf file (default %s), must not be compressed.\n"
 "-y autoconfirm programming\n"
@@ -1004,5 +1122,9 @@ int main (int argc, char **argv)
 	// printf("io_check timeouts %d maxdelay %d\n", g_flushrx_timeout, g_flushrx_maxdelay);
 
 	printf("jtagger exit with status %d\n", ret);
+
+	// printf("FTDI read cumulative %d.%.9" PRId64 " seconds\n", (int)g_cumulative_read_time.tv_sec,
+	//			 g_cumulative_read_time.tv_nsec);
+
 	return ret;
 }

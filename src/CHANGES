@@ -53,6 +53,12 @@ This mode captures the sld_virtual_jtag signals into ram and reads them
 back for analysis. This identified a nasty issue with long delays when
 reading from FTDI. Fixing this should alleviate the poor read performance.
 Debug work is in progress on this.
+
+2023-02-21 Speedups for jtag read
+Added buffering for FTDI I/O and refactored a bit. Reading is still slow
+but I suspect this is down to the FTDI driver itself. Interestingly the
+windows version is significantly faster than the linux one. The next step
+is to group the reads into blocks rather than 32 bits at a time. Laters.
  
 NEWS
 Looking ahead ... 

@@ -1,7 +1,12 @@
 CC = gcc
 CFLAGS = -std=gnu99 -Wall
+
+#ifeq ($(MSYSTEM), MINGW32)
+ifdef WINDIR
+LIBS = -lftdi1	# Windows MinGW may need this version instead
+else
 LIBS = -lftdi
-# LIBS = -lftdi1	# Windows MinGW may need this version instead
+endif
 
 USERCODE = usercode.o
 
@@ -23,7 +28,7 @@ all: $(ALLOBJS)
 	$(CC) -c $(CFLAGS) -o $@ $<
 
 clean:
-	rm -f $(JTAGGEREXE) $(SERVEREXE) $(ALLOBJS)
+	rm -f $(JTAGGEREXE) $(SERVEREXE) $(JTAGGEREXE).exe $(SERVEREXE).exe $(ALLOBJS)
 
 cleanobj:
 	rm -f $(ALLOBJS)
