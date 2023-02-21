@@ -73,6 +73,9 @@ static int get_hub_info(void)
     respond("WX2e2f2e2f2e2f2c2d2c2d2c2c6d2c6d2c6d2c6d2c6d2c6d2c6d2e6f2eZ");	// PAUSEIR to SHIFTDR 8 zeros
     // TMS        1   1   1   0   0    data+read                    1  // ends at EXIT1DR
 
+    respond("WX2e2f2c2d2cZ");	// from EXIT1DR to RUNIDLE
+    // TMS        1   0
+
 	clientflushrx();
 	respond("RX08Z");	// read 8 bytes (expect 0202020202020202, also 8 zeros)
 	io_check();
@@ -89,11 +92,9 @@ DR register. Each four-bit scan must pass through the UPDATE_DR state before the
 next four-bit scan. The 8 scans are assembled into a 32-bit value with the definitions
 shown in the table below */
 
-    respond("WX2e2f2c2d2cZ");	// from EXIT1DR to RUNIDLE
-    // TMS        1   0
-	IRSHIFT_USER0();
+	IRSHIFT_USER0();				// RUNIDLE to PAUSEIR
 
-	scan_dr_int(0, 4, READMODE);	// RUNIDLE to EXIT1DR
+	scan_dr_int(0, 4, READMODE);	// PAUSEIR to RUNIDLE
 
 	clientflushrx();
 	respond("RX04Z");	// read 4 bytes
@@ -106,10 +107,12 @@ shown in the table below */
 
 	for (int i=1; i<16; i++)
 	{
-        respond("WX2e2f2c2d2cZ");	// from EXIT1DR to RUNIDLE
         // TMS        1   0
         respond("WX2e2f2c2d2c2d2c2c6d2c6d2c6d2e6f2eZ");	// RUNIDLE to DRSCAN 4 bits
-        // TMS        1   0   0    data+read   1  // ends at EXIT1DR
+        // TMS        1   0   0    data+read    1  // ends at EXIT1DR
+
+        respond("WX2e2f2c2d2cZ");	// from EXIT1DR to RUNIDLE
+        // TMS        1   0
 
 		clientflushrx();
 		respond("RX04Z");	// read 4 bytes
@@ -240,6 +243,7 @@ int fpga_vjtag(void)
 	vjtag_test(0,0);	// IR Leds off
 
 	tap_reset();
+	jflush();
 
 	return 0;
 }
@@ -491,7 +495,9 @@ int fpga_txrxmem(char *uparams, unsigned int chipid)
 
 			for (int i=0; i<=count; i++)
 			{
-				int addr = rand() & 0x3FFF;	// random address (different each iteration since seed changes above)
+				// random address (different each iteration since seed changes above)
+				int addr = rand() & (MEMSIZE-1);	// sanitize since using as index to mem[MEMSIZE]
+													// BEWARE MEMSIZE must be power of 2 (checked above via #error)
 				coverage[addr]++;
 				unsigned int n = mem[addr];
 				vdr_ret = scan_vir_vdr(4, 32, IRADDR, addr, NOREADMODE);// Set read address
@@ -534,6 +540,7 @@ int fpga_txrxmem(char *uparams, unsigned int chipid)
 
 	// At exit...
 	tap_reset();
+	jflush();
 
 	return 0;
 }
@@ -639,6 +646,7 @@ int fpga_txrxmem_timing(char *uparams, unsigned int chipid)
 
 	// At exit...
 	tap_reset();
+	jflush();
 
 	return 0;
 }
@@ -771,6 +779,7 @@ int usercode(char *uparams)
 	}
 
 	tap_reset();
+	jflush();
 
 	return 0;
 }

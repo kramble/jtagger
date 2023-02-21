@@ -154,6 +154,7 @@ int initmessage();
 int respond(char *s);
 int clientflushrx(void);
 int io_check(void);
+void jflush(void);
 int tap_reset(void);
 int runtest5(void);
 void IRSHIFT_USER0(void);

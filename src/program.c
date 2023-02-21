@@ -198,7 +198,7 @@ static int finish_programming()
 	if (0)	// This works too
 		tap_reset();
 
-	respond("PZ");	// Flush buffer
+	jflush();	// Else it don't finish!
 
 	return 0;
 }
@@ -855,13 +855,7 @@ int program_fpga(char *fname, int filetype, int device_index, int yes)
 				time(&tstart);
 				ret = parse(f, 0xF00FB175, filetype);	// Recite the Magic Spell "FoofBits" (just so I don't call it by mistake)
 				time(&tfinish);
-
-//#ifndef __MINGW32__
-//				// This is a weird one as PRId64 expands to %ld not %lld on 64 bit linux gcc
-//				printf("programming complete, duration %lld seconds\n", (long long)(tfinish - tstart));
-//#else
 				printf("programming complete, duration %" PRId64 " seconds\n", (int64_t)(tfinish - tstart));
-//#endif
 			}
 			else
 				printf("programming declined, exit\n");
@@ -877,6 +871,7 @@ int program_fpga(char *fname, int filetype, int device_index, int yes)
 	printerror(ret);
 
 	tap_reset();
+	jflush();		// Just to be sure
 
 	return ret;
 }

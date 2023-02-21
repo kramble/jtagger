@@ -11,6 +11,8 @@ Uses ublast_access_ftdi from openocd for communication with Altera USB Blaster
 #include "common.h"
 #include <ftdi.h>		// For driver_status()
 
+// The Quartus 10.1 version of cygwin is VERY old, so this may not be needed for modern cygwin
+// clock_gettime() is only needed for debug, so no great loss if cygwin does not have it
 #ifndef __CYGWIN__
 #define WANT_CLOCK_GETTIME
 #endif
@@ -42,24 +44,6 @@ struct timespec g_cumulative_read_time;	// Accessed from usercode.c
 // https://stackoverflow.com/questions/53708076/what-is-the-proper-way-to-use-clock-gettime
 
 enum { NS_PER_SECOND = 1000000000 };
-
-#if 0
-void sub_timespec(struct timespec t1, struct timespec t2, struct timespec *td)
-{
-    td->tv_nsec = t2.tv_nsec - t1.tv_nsec;
-    td->tv_sec  = t2.tv_sec - t1.tv_sec;
-    if (td->tv_sec > 0 && td->tv_nsec < 0)
-    {
-        td->tv_nsec += NS_PER_SECOND;
-        td->tv_sec--;
-    }
-    else if (td->tv_sec < 0 && td->tv_nsec > 0)
-    {
-        td->tv_nsec -= NS_PER_SECOND;
-        td->tv_sec++;
-    }
-}
-#endif
 
 void sub_timespec(struct timespec t1, struct timespec t2, struct timespec *td)
 {
@@ -93,19 +77,6 @@ void add_timespec(struct timespec t1, struct timespec t2, struct timespec *td)
     td->tv_sec = temp.tv_sec;
     td->tv_nsec = temp.tv_nsec;	
 }
-
-#if 0
-int test_gettime(void)
-{
-    struct timespec start, finish, delta;
-    clock_gettime(CLOCK_REALTIME, &start);
-    sleep(1);
-    clock_gettime(CLOCK_REALTIME, &finish);
-    sub_timespec(start, finish, &delta);
-    printf("%d.%.9ld\n", (int)delta.tv_sec, delta.tv_nsec);
-    return 0;
-}
-#endif
 
 #endif // WANT_CLOCK_GETTIME
 
@@ -174,7 +145,6 @@ static int driver_status(void)
 static int flush_write()
 {
 	uint32_t bytes_written = 0;
-	// printf("FLUSH %d\n", info.bufidx);
 
 	if (!(info.drv && info.drv->open))
 		return -1;			// Not open
@@ -186,19 +156,17 @@ static int flush_write()
 	if (ret || bytes_written != info.bufidx)
 	{
 		printf("write: ERROR ret %d or bytes_written %u != info.bufidx %d\n",
-#ifdef __CYGWIN__
+#ifdef __CYGWIN__	// It's fussy
 					ret, (unsigned int)bytes_written, info.bufidx);
 #else
-					ret, (unsigned int)bytes_written, info.bufidx);
+					ret, bytes_written, info.bufidx);
 #endif
-		// respond("NWZ");	// Caller responds
 		g_server_status |= JSTA_WERROR;
 		info.bufidx = 0;
 		return -1;
 	}
 	else
 	{
-		// respond("KWZ");	// Caller responds
 		g_server_status &= ~JSTA_WERROR;
 		info.bufidx = 0;
 		return 0;
@@ -230,7 +198,8 @@ static int handle_message(char *s)
 
 	case JMSG_STATUS :
 		{
-			int status = (g_mode & 2) ? JSTA_OPEN : g_server_status;	// Spoof connected state
+			unsigned int status = (g_mode & 2) ? JSTA_OPEN : g_server_status;	// Spoof connected state
+			status |= info.bufidx << 16;	// So we can get buffer fill state (may be useful for packing reads)
 			char *hex = hexdump((uint8_t*)&status, sizeof(status));
 			if (hex)
 			{
@@ -273,7 +242,7 @@ static int handle_message(char *s)
 	case JMSG_FTDIOPEN :
 		{
 			// No checks, just attempt whatever client requests (may segfault!)
-			info.bufidx = 0;
+			info.bufidx = 0;	// In case we close and reopen
 			if (initftdi())
 			{
 				respond("NJZ");
@@ -365,25 +334,6 @@ static int handle_message(char *s)
 			}
 
 			info.bufidx += len;
-#if 0
-			else if (info.drv && info.drv->open)	// NB checking function pointer info.drv->open exists
-			{
-				uint32_t bytes_written = 0;		// return value from info.drv->write()
-				ret = info.drv->write(info.drv, info.buf, info.bufidx, &bytes_written);
-				if (ret || bytes_written != info.bufidx)
-				{
-					printf("write: ERROR ret %d or bytes_written %d != info.bufidx %d\n",
-								ret, bytes_written, info.bufidx);
-					respond("NWZ");
-					g_server_status |= JSTA_WERROR;
-				}
-				else
-				{
-					respond("KWZ");
-					g_server_status &= ~JSTA_WERROR;
-				}
-			}
-#endif
 			if (flushret)
 			{
 				respond("NWZ");
@@ -394,14 +344,6 @@ static int handle_message(char *s)
 				respond("KWZ");
 				g_server_status &= ~JSTA_WERROR;
 			}
-#if 0
-			else
-			{
-				printf("write: info not initialized\n");
-				respond("NWZ");
-				g_server_status &= ~JSTA_WERROR;
-			}
-#endif
 			break;
 		}
 
@@ -410,7 +352,7 @@ static int handle_message(char *s)
 		// where the meaning of the data depends on the mode (see notes there). This should be handled by
 		// jtagger.c so nothing to do here.
 		{
-			flush_write();	// TODO handle error
+			flush_write();	// TODO handle error (status flags are already set)
 
 			// Get size from message "RXnnnnZ"
 			if (s[1] != JMSG_HEX)

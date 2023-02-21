@@ -304,13 +304,11 @@ static void ublast_initial_wipeout(void)
 	
 	// Send it twice (see note above) ... NB ublast_buf_write() calls respond() so sequence prefix is applied
 	ublast_buf_write(info.buf, bytes_to_send, &retlen);
-    respond("PZ");	// Flush
 
 	if (!g_standalone)
 		JTAGGER_SLEEP(100 * MILLISECONDS);	// allow time for the FTDI I/O operation
 
 	ublast_buf_write(info.buf, bytes_to_send, &retlen);
-    respond("PZ");	// Flush
 	if (!g_standalone)
 		JTAGGER_SLEEP(100 * MILLISECONDS);
 
@@ -320,10 +318,11 @@ static void ublast_initial_wipeout(void)
 	ublast_tms_seq(&tms_reset, 5, 0);
 	// tap_set_state(TAP_RESET);
 
-	ublast_flush_buffer();	// MJ added this to write the TAP_RESET
-    respond("PZ");	// Flush
+	ublast_flush_buffer();	// Added this to write the TAP_RESET
+    jflush();				// Ensure server.c buffer is flushed
 
-	JTAGGER_SLEEP(100 * MILLISECONDS);
+	if (!g_standalone)
+		JTAGGER_SLEEP(100 * MILLISECONDS);
 
 	// After physically connecting the USB device cable, the first attempt to access the device
 	// returns the device ID mis-aligned. Flushing the read buffer TWICE fixes this (alternatively
@@ -353,18 +352,26 @@ static void ublast_initial_wipeout(void)
 	}
 }
 
-int tap_reset(void)	// NOT static since called from program()
+// These are NOT static since called from program() and usercode()
+
+void jflush(void)
+{
+
+	respond("PZ");	// Flush server.c write buffer (NB flushes automatically on read)
+}
+
+int tap_reset(void)
 {
 	// Enter TAP_RESET state (valid from any state)
     respond("WX2e2f2e2f2e2f2e2f2e2f2eZ");
     // TMS        1   1   1   1   1
-    respond("PZ");	// Flush
+
 	return io_check();
 }
 
-int runtest5(void)	// NOT static since called from program()
+int runtest5(void)
 {
-	// Move from TAP_RESET to RUN/IDLE (NB all openocd sequences assume RUN/IDLE as start point)
+	// Move from TAP_RESET to RUN/IDLE (NB all openocd sequences assume RUNIDLE as start point)
     respond("WX2c2d2c2d2c2d2c2d2c2d2cZ");
     // TMS        0   0   0   0   0
 	return io_check();
@@ -448,15 +455,9 @@ int runtest(int n)	// NOT static since called from program()
 	return 0;
 }
 
-// #define TEST_SCAN_DR	// Enable test
-
-#ifdef TEST_SCAN_DR		// DEBUG function, call from top of main() then exit
-static char *test_scan_dr_int_expect;	// TESTING see test_scan_dr_int()
-#endif
-
 int scan_dr_int(unsigned int val, int bits, int read)
 {
-	// Requires entry from PAUSE_IR, exits in RUNIDLE (WRONG actually EXIT1DR, TODO fix)
+	// Requires entry from PAUSEIR, exits in RUNIDLE
 	// Require a minimum of 4 bits since using hub scan as template, the final two
 	// bits needing special handing due to JTAG mode change
 	// NB all done in bitbang mode (TODO use byte mode)
@@ -506,35 +507,10 @@ int scan_dr_int(unsigned int val, int bits, int read)
 
 	strcat (str, "2e2f2c2d2cZ");	// end at RUNIDLE
 
-#ifdef TEST_SCAN_DR		// TESTING, see test_scan_dr_int()
-	if (test_scan_dr_int_expect)
-	{
-		printf("test %s\n", str);
-		return strcmp(str, test_scan_dr_int_expect);
-	}
-	else
-#endif
 		respond(str);
 
 	return 0;
 }
-
-#ifdef TEST_SCAN_DR		// DEBUG function, enabled via #define TEST_SCAN_DR (see above), but need to call it from main()
-static int test_scan_dr_int()
-{
-	test_scan_dr_int_expect = "WX2e2f2e2f2e2f2c2d2c2d2c2c6d2c6d2c6d2c6d2e7f3eZ";
-	if (scan_dr_int(0x10, 5))
-		printf("FAIL %s\n", test_scan_dr_int_expect);
-
-	test_scan_dr_int_expect = "WX2e2f2e2f2e2f2c2d2c2d2c2c6d2c6d2c6d2e6f2eZ";	// PAUSEIR to DRSCAN 4 bits
-	if (scan_dr_int(0, 4))
-		printf("FAIL %s\n", test_scan_dr_int_expect);
-
-	// TODO add some more to be sure
-
-	return 0;
-}
-#endif
 
 long long unsigned scan_vir_vdr(unsigned int irlen, unsigned int vrlen, unsigned int vir, unsigned int vdr, int read)
 {
@@ -1115,7 +1091,10 @@ int main (int argc, char **argv)
 	// Finish with TAP_RESET (safe since server will reject if FTDI not open, but check ftdi_ok anyway
 	// as server does complain which could be distracting)
 	if (ftdi_ok)
+	{
 		tap_reset();
+		jflush();
+	}
 
 	// Print timeout stats
 	// NB if g_flushrx_timeout > 0, then g_flushrx_maxdelay will always be 99

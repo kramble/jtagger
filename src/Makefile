@@ -24,6 +24,9 @@ all: $(ALLOBJS)
 # Comment out the following to omit jtagserver from the build...
 #	$(CC) -o $(SERVEREXE) $(SERVEROBJS) $(LIBS)
 
+server: $(ALLOBJS)
+	$(CC) -o $(SERVEREXE) $(SERVEROBJS) $(LIBS)
+
 %.o: %.c $(HEADERS)
 	$(CC) -c $(CFLAGS) -o $@ $<
 
