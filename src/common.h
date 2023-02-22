@@ -1,5 +1,11 @@
 // common.h
 
+// The Quartus 10.1 version of cygwin is VERY old, so this may not be needed for modern cygwin
+// clock_gettime() is only needed for debug, so no great loss if cygwin does not have it
+#ifndef __CYGWIN__
+#define WANT_CLOCK_GETTIME
+#endif
+
 #include <stdio.h>
 #include <stdint.h>
 #include <inttypes.h>
@@ -124,6 +130,13 @@ extern int g_spoofprog;		// DEBUG inhibits respond()
 
 extern int g_debug_log;		// Write responds to file
 
+extern int g_respond_len, g_wop, g_wbyte, g_rop, g_rbyte;	// DEBUG counters
+
+#ifdef WANT_CLOCK_GETTIME
+extern struct timespec g_cumulative_read_time;
+enum { NS_PER_SECOND = 1000000000 };
+#endif
+
 // NB using global g_clientmsg so caller can access last message
 extern struct jtag_msgbuf g_clientmsg;		// See clientflushrx()
 
@@ -164,12 +177,18 @@ int scan_dr_int(unsigned int val, int bits, int read);
 long long unsigned scan_vir_vdr(unsigned int irlen, unsigned int vrlen, unsigned int vir, unsigned int vdr, int read);
 int print_nibble(void);
 unsigned long long get_bitbang(unsigned int len, unsigned int shift);
+void bulk_read(char *mem, unsigned int len);
+void bulk_write(char *mem, unsigned int len);
 int program_fpga(char *fname, int filetype, int device_index, int yes);
-void send_residual(char *packbuf, char *dst);
 int serve_alone(char *msg);
 int client(void);
 int server(void);
 int usercode(char *uparams);
+
+#ifdef WANT_CLOCK_GETTIME
+void add_timespec(struct timespec t1, struct timespec t2, struct timespec *td);
+void sub_timespec(struct timespec t1, struct timespec t2, struct timespec *td);
+#endif
 #ifdef __MINGW32__
 int windows_sleep(unsigned int useconds);
 #endif

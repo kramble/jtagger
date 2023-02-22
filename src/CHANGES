@@ -54,11 +54,24 @@ back for analysis. This identified a nasty issue with long delays when
 reading from FTDI. Fixing this should alleviate the poor read performance.
 Debug work is in progress on this.
 
-2023-02-21 Speedups for jtag read
+2023-02-21 Speedups for jtag read (commit 12)
 Added buffering for FTDI I/O and refactored a bit. Reading is still slow
 but I suspect this is down to the FTDI driver itself. Interestingly the
 windows version is significantly faster than the linux one. The next step
 is to group the reads into blocks rather than 32 bits at a time. Laters.
+
+2023-02-21 Bugfix server mode (commit 13)
+Obscure bug caused by a tap sequencing error only affected client/server mode,
+not seen when running standalone. I haven't a clue how that works (it really
+shouldn't). UPDATE, looks like a timing issue as I can replicate it standalone
+by adding a 25mS sleep before the offending FTDI read (data was garbage as the
+sequencing error skipped SHIFTDR). Anyway the cause has been fixed, so this is
+just for info.
+
+2023-02-22 Greatly improved the speed of bulk read transfers
+Did not have to resort to verilog modifications, uses the normal capture/shift
+cycle. There seems to be an issue with larger transfers, so currently limited
+to 72 * 32 bit words per read, but it's still plenty fast.
  
 NEWS
 Looking ahead ... 

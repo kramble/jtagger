@@ -11,12 +11,6 @@ Uses ublast_access_ftdi from openocd for communication with Altera USB Blaster
 #include "common.h"
 #include <ftdi.h>		// For driver_status()
 
-// The Quartus 10.1 version of cygwin is VERY old, so this may not be needed for modern cygwin
-// clock_gettime() is only needed for debug, so no great loss if cygwin does not have it
-#ifndef __CYGWIN__
-#define WANT_CLOCK_GETTIME
-#endif
-
 // BEWARE the server process and jtagger process have INDEPENDENT versions of info (since they
 // are separate processes). So data must be copied between them at the message level.
 // NB info.drv is used ONLY by server (jtagger does not communicate directly with FTDI)
@@ -37,48 +31,6 @@ static struct ublast_info info = {
 	// is also listed in .data). The above values are possibly stored in .data (see objdump -s -j.data server
 	// which shows fb090160 at offset 8040(YMMV))
 };
-
-struct timespec g_cumulative_read_time;	// Accessed from usercode.c
-
-#ifdef WANT_CLOCK_GETTIME
-// https://stackoverflow.com/questions/53708076/what-is-the-proper-way-to-use-clock-gettime
-
-enum { NS_PER_SECOND = 1000000000 };
-
-void sub_timespec(struct timespec t1, struct timespec t2, struct timespec *td)
-{
-	struct timespec temp;	// Allow output to be same as input
-    temp.tv_nsec = t2.tv_nsec - t1.tv_nsec;
-    temp.tv_sec  = t2.tv_sec - t1.tv_sec;
-    if (temp.tv_sec > 0 && temp.tv_nsec < 0)
-    {
-        temp.tv_nsec += NS_PER_SECOND;
-        temp.tv_sec--;
-    }
-    else if (temp.tv_sec < 0 && temp.tv_nsec > 0)
-    {
-        temp.tv_nsec -= NS_PER_SECOND;
-        temp.tv_sec++;
-    }
-    td->tv_sec = temp.tv_sec;
-    td->tv_nsec = temp.tv_nsec;
-}
-
-void add_timespec(struct timespec t1, struct timespec t2, struct timespec *td)
-{
-	struct timespec temp;	// Allow output to be same as input
-    temp.tv_nsec = t2.tv_nsec + t1.tv_nsec;
-    temp.tv_sec  = t2.tv_sec + t1.tv_sec;
-    if (temp.tv_nsec >= NS_PER_SECOND)
-    {
-        temp.tv_nsec -= NS_PER_SECOND;
-        temp.tv_sec++;
-    }
-    td->tv_sec = temp.tv_sec;
-    td->tv_nsec = temp.tv_nsec;	
-}
-
-#endif // WANT_CLOCK_GETTIME
 
 static int initftdi(void)
 {
@@ -151,6 +103,8 @@ static int flush_write()
 
 	if (info.bufidx == 0)	// Nothing to write
 		return 0;
+
+	g_wop++; g_wbyte += info.bufidx;
 
 	int ret = info.drv->write(info.drv, info.buf, info.bufidx, &bytes_written);
 	if (ret || bytes_written != info.bufidx)
@@ -384,6 +338,7 @@ static int handle_message(char *s)
 				info.bufidx = *((unsigned short*)info.buf);
 				
 			// printf("read: size %d\n", info.bufidx);
+			g_rop++; g_rbyte += info.bufidx;
 
 			int ret = -1;
 			uint32_t bytes_read = 0;		// return value from info.drv->read()
@@ -409,10 +364,12 @@ static int handle_message(char *s)
 				else
 				{
 #ifdef WANT_CLOCK_GETTIME
+					double report = 0.1L;	// Reporting threshold
+					report = 10.0L;			// Effectively disabled
 				    clock_gettime(CLOCK_MONOTONIC, &finish);
     				sub_timespec(start, finish, &delta);
     				add_timespec(g_cumulative_read_time, delta, &g_cumulative_read_time);
-					if (delta.tv_sec > 0 || delta.tv_nsec > (long)(0.1L * NS_PER_SECOND))	// 0.1 second reporting threshold
+					if (delta.tv_sec > 0 || delta.tv_nsec > (long)(report * NS_PER_SECOND))
 					    printf("FTDI read %d.%.9" PRId64 " seconds cumulative %d.%.9" PRId64 " seconds\n",
 								(int)delta.tv_sec, (int64_t)delta.tv_nsec,
 								(int)g_cumulative_read_time.tv_sec, (int64_t)g_cumulative_read_time.tv_nsec);

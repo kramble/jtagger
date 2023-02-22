@@ -262,7 +262,7 @@ static int push_data(char *token)
 	return ch;
 }
 
-void send_residual(char *packbuf, char *dst)	// NOT static since called from usercode()
+static void send_residual(char *packbuf, char *dst)
 {
 	int debug = 0;
 	int lastlen = 0;

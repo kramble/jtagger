@@ -30,6 +30,8 @@ int g_spoofprog;		// DEBUG inhibits respond()
 
 int g_debug_log;		// Write responds to file
 
+int g_respond_len, g_wop, g_wbyte, g_rop, g_rbyte;	// DEBUG counters
+
 // NB using global g_clientmsg so caller can access last message
 struct jtag_msgbuf g_clientmsg;		// See clientflushrx()
 
@@ -283,6 +285,8 @@ int initmessage()
 
 int respond(char *s)
 {
+	g_respond_len += strlen(s);
+
 	// if (!g_silent) printf("rs: %s\n", s);
 
 	struct jtag_msgbuf msg;
@@ -551,6 +555,46 @@ int io_check(void)
 	}
 	return ret;
 }
+
+#ifdef WANT_CLOCK_GETTIME
+// https://stackoverflow.com/questions/53708076/what-is-the-proper-way-to-use-clock-gettime
+
+struct timespec g_cumulative_read_time;
+
+void add_timespec(struct timespec t1, struct timespec t2, struct timespec *td)
+{
+	struct timespec temp;	// Allow output to be same as input
+    temp.tv_nsec = t2.tv_nsec + t1.tv_nsec;
+    temp.tv_sec  = t2.tv_sec + t1.tv_sec;
+    if (temp.tv_nsec >= NS_PER_SECOND)
+    {
+        temp.tv_nsec -= NS_PER_SECOND;
+        temp.tv_sec++;
+    }
+    td->tv_sec = temp.tv_sec;
+    td->tv_nsec = temp.tv_nsec;	
+}
+
+void sub_timespec(struct timespec t1, struct timespec t2, struct timespec *td)
+{
+	struct timespec temp;	// Allow output to be same as input
+    temp.tv_nsec = t2.tv_nsec - t1.tv_nsec;
+    temp.tv_sec  = t2.tv_sec - t1.tv_sec;
+    if (temp.tv_sec > 0 && temp.tv_nsec < 0)
+    {
+        temp.tv_nsec += NS_PER_SECOND;
+        temp.tv_sec--;
+    }
+    else if (temp.tv_sec < 0 && temp.tv_nsec > 0)
+    {
+        temp.tv_nsec -= NS_PER_SECOND;
+        temp.tv_sec++;
+    }
+    td->tv_sec = temp.tv_sec;
+    td->tv_nsec = temp.tv_nsec;
+}
+
+#endif // WANT_CLOCK_GETTIME
 
 #ifdef __MINGW32__
 #include <windows.h>

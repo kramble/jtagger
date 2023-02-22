@@ -2,7 +2,6 @@
 
 TODO ...
 Write (more) functions for common steps.
-Add a bulk read function (may need verilog changes).
 Add a softcore CPU and control it via flags.
 Add jtag uart functionality (hosting).
 
@@ -76,7 +75,6 @@ static int get_hub_info(void)
     respond("WX2e2f2c2d2cZ");	// from EXIT1DR to RUNIDLE
     // TMS        1   0
 
-	clientflushrx();
 	respond("RX08Z");	// read 8 bytes (expect 0202020202020202, also 8 zeros)
 	io_check();
 
@@ -96,7 +94,6 @@ shown in the table below */
 
 	scan_dr_int(0, 4, READMODE);	// PAUSEIR to RUNIDLE
 
-	clientflushrx();
 	respond("RX04Z");	// read 4 bytes
 	io_check();
 	buildinfo = (buildinfo >> 4) | (print_nibble() << 28);
@@ -114,7 +111,6 @@ shown in the table below */
         respond("WX2e2f2c2d2cZ");	// from EXIT1DR to RUNIDLE
         // TMS        1   0
 
-		clientflushrx();
 		respond("RX04Z");	// read 4 bytes
 		io_check();
 		buildinfo = (buildinfo >> 4) | (print_nibble() << 28);
@@ -181,8 +177,6 @@ static int vjtag_test(int vir, int vdr)
 
 	scan_dr_int(0x10 | vir, 5, READMODE);	// PAUSEIR to SHIFTDR 00001 (addr=1 is MSB, hence 0x10)
 
-	clientflushrx();
-
 	respond("RX05Z");	// read 5 bytes (expect 0202020202020202, 5 zeros)
 	io_check();
 
@@ -209,7 +203,6 @@ static int vjtag_test(int vir, int vdr)
 
 	scan_dr_int(0x10 | vdr, 5, READMODE);	// PAUSEIR to SHIFTDR, top bit is enable so set 0x10, bottom 4 are leds
 
-	clientflushrx();
 	respond("RX05Z");	// read 5 bytes (should be 0302020302 = 9 as verilog DRCaptures a const)
 	io_check();
 	return 0;
@@ -248,12 +241,167 @@ int fpga_vjtag(void)
 	return 0;
 }
 
-static void bulk_upload(char *mem, unsigned int len)
-{
-	// Setup is same as scan_vir_vdr(4, 32, IWDATA ...)
-	// TODO could buffer the setup (it won't give much speedup, and this is LIGHTNING fast anyway)
+// NOTE the bulk transfer functions may appear to belong in jtagger.c BUT they rely on user #defines IRDATA and IWDATA
+// which do NOT belong in jtagger.c so they will have to stay here (at least until I think of a better way)
 
-	int vir = IWDATA, irlen = 4;
+void bulk_readbuf(char *mem, unsigned int len)
+{
+	// Processing g_clientmsg.mtext so no point having an error return
+	// NB A length mismatch would result in an error in the server.c FTDI read, so handled there
+	// Unlike get_bitbang() len is bytes, not bits
+
+	char *p = g_clientmsg.mtext + 4;
+
+	// printf("rbuf = [%s]\n", p-4);
+
+	for (int i=0; i<len; i++)
+	{
+		// TODO make efficient
+		unsigned char b, c=0;
+		b = *p++;	// BEWARE do not use UNHEX() directly on p++ (else ++ will happen 6 times)
+		c = UNHEX(b);
+		b = *p++;
+		c = c<<4 | UNHEX(b);
+		*mem++ = c;
+	}
+}
+
+static void bulk_residual_write(char *packbuf, char *dst, int mode)
+{
+	// Based on program.c/send_residual() with addition of mode
+	int debug = 0;
+	int lastlen = 0;
+
+	if (dst > packbuf+2)	// Check for residual data (ie packbuf contains more than "WX")
+	{
+		if (debug)
+			printf("dst %p *dst=%d packbuf %p ...\n%s\n", dst, *dst, packbuf, packbuf);	// *dst should (now) be NULL
+
+		// TESTED by changing postamble in devices.c - use parameters preamble=3192, postamble=401 for max
+		// packet "bff..ffZ", then postamble=409 for rollover "81ffZ"
+
+		int numpackets = (dst - packbuf - 2) / 128;		// 128 for (header byte + 63 bytes data) * 2 for hex
+		char* last = packbuf + numpackets * 128 + 2;	// The -2 above / + 2 here allows for "WX"
+
+		if (debug)
+		{
+			lastlen = dst - last;	// DEBUG
+			printf("numpackets = %d packbuf = %p last = %p lastlen = %d\n", 
+				numpackets, packbuf, last, lastlen);
+			printf("packlen = %" PRIuPTR " lastoffset = %" PRIuPTR "\n", dst - packbuf, last - packbuf);
+		}
+
+		if (last < dst)
+		{
+			// update header for last packet
+			unsigned char header = 0x80 | ((dst - last) / 2 - 1);	// -1 allows for the header byte itself
+			if (header > 0xbf)	// max byte packet
+				DOABORT("header > 0xbf");
+			header |= mode ? 0 : 0x40;		// Set read flag
+			*last = TOHEX(header>>4);
+			*(last+1) = TOHEX(header);
+		}
+		else if (last == dst)
+		{
+			// Last packet was already complete (seen with preamble=3192, postamble=401), this is OK
+			if (debug)
+				printf("INFO last == dst\n");
+		}
+		else
+			// DOABORT("last > dst");						// This should not happen
+			printf("%s: ERROR last > dst\n", __func__);		// But don't abort (programming may succeed anyway)
+
+		// Write residual
+		*dst++ = 'Z';
+		*dst = 0;
+
+		if (debug)
+			puts(packbuf);
+
+		respond(packbuf);
+	}
+}
+
+static void bulk_residual_read(char *packbuf, char *dst, char *result, int mode)
+{
+	// Separate for now until debugged, TODO combine with write
+
+	// Based on program.c/send_residual() with addition of mode
+	int debug = 0;
+	int lastlen = 0;
+
+	int packlen = mode ? 128 : 30;	// NB read packet includes 20 byte TMS sequence hence (2 + 8 + 20)
+
+	if (dst > packbuf+2)	// Check for residual data (ie packbuf contains more than "WX")
+	{
+		if (debug)
+			printf("dst %p *dst=%d packbuf %p ...\n%s\n", dst, *dst, packbuf, packbuf);	// *dst should (now) be NULL
+
+		int numpackets = (dst - packbuf - 2) / packlen;		// 128 for (header byte + 63 bytes data) * 2 for hex
+		char* last = packbuf + numpackets * packlen + 2;	// The -2 above / + 2 here allows for "WX"
+
+		if (debug)
+		{
+			lastlen = dst - last;	// DEBUG
+			printf("numpackets = %d packbuf = %p last = %p lastlen = %d\n", 
+				numpackets, packbuf, last, lastlen);
+			printf("packlen = %" PRIuPTR " lastoffset = %" PRIuPTR "\n", dst - packbuf, last - packbuf);
+		}
+
+		if (last < dst)
+		{
+			// update header for last packet
+			int adj = mode ? 0 : 20;
+			unsigned char header = 0x80 | ((dst - last - adj) / 2 - 1);	// -1 allows for the header byte itself
+			if (header > 0xbf)	// max byte packet
+				DOABORT("header > 0xbf");
+			header |= mode ? 0 : 0x40;		// Set read flag
+			*last = TOHEX(header>>4);
+			*(last+1) = TOHEX(header);
+		}
+		else if (last == dst)
+		{
+			// Last packet was already complete
+			if (debug)
+				printf("INFO last == dst\n");
+		}
+		else
+			// DOABORT("last > dst");						// This should not happen
+			printf("%s: ERROR last > dst\n", __func__);		// But don't abort (programming may succeed anyway)
+
+		// Write residual
+		*dst++ = 'Z';
+		*dst = 0;
+
+		if (debug)
+			puts(packbuf);
+
+		respond(packbuf);
+
+		if (lastlen)
+			DOABORT("lastlen");		// Read should not have any partial packets
+
+		int rcount = numpackets;
+
+		// printf("Readback %d ints %d bytes\n", rcount, rcount*4);
+
+		char tmp[64];
+		// BEWARE server.c only allows 2 byte (4 hex char) size
+		sprintf(tmp,"RX%02x%02xZ", (rcount*4)&0xff, (rcount/64)&0xff);
+		respond(tmp);
+
+		io_check();
+		bulk_readbuf(result, rcount*4);
+
+		rcount = 0;
+	}
+}
+
+static void bulk_transfer(char *mem, unsigned int len, int mode)
+{
+	// Setup is same as scan_vir_vdr(4, 32, ...)
+
+	int vir = mode ? IWDATA : IRDATA, irlen = 4;
 
 	tap_reset();
 	runtest5();
@@ -261,70 +409,141 @@ static void bulk_upload(char *mem, unsigned int len)
 	IRSHIFT_USER1();
 
 	// NB need to scan 5 bits for 4 bit VIR as top bit is hub address
-	scan_dr_int(0x10 | vir, irlen+1, READMODE);	// PAUSEIR to SHIFTDR (addr=1 is MSB, hence 0x10)
-
-	clientflushrx();
-
-	respond("RX05Z");	// read 5 bytes (expect 0202020202020202, 5 zeros)
-	io_check();
+	scan_dr_int(0x10 | vir, irlen+1, NOREADMODE);	// hub addr=1 is MSB, hence 0x10
 
 	IRSHIFT_USER0();	// exits in PAUSEIR
 
-	// Bulk upload is based on scan_dr_int(vdr, vrlen) and parse_rbf()
-	// Scans data non-stop (does not pass through DRUPDATE), see jtag_vdr.v
-	// NB unlike scan_dr_int() we do not set the readback flag
+	// Based on scan_dr_int(vdr, vrlen) and parse_rbf()
+	// Write scans data non-stop (does not pass through UPDATEDR, see jtag_vdr.v)
+	// Read goes though the normal capture/update loop
 
 	char packbuf[BUF_LEN];	// NB BUF_LEN is message buffer
 	*packbuf = 0;			// Set as empty
 
-//  respond("WX2e2f2e2f2e2f2c2d2c2d2c2cZ");	// PAUSEIR to SHIFTDR
     respond("WX2e2f2e2f2e2f2c2d2c2d2cZ");	// PAUSEIR to SHIFTDR
-    // TMS        1   1   1   0   0  ^^
+    // TMS        1   1   1   0   0
+
 	char *dst = packbuf;
 	strcpy(dst, "WX");
 	dst += 2;
 
 	char *p = mem;
+	char *r = mem;	// FTDI read data is written here
+	int rcount = 0;
 	int byte = 0;
 	while (p < mem + len)
 	{
 		if (byte == 0)
 		{
 			// packet header
-			*dst++ = 'b';
-			*dst++ = 'f';
+			if (mode)
+			{
+				*dst++ = 'b';	// Write 63 bytes
+				*dst++ = 'f';
+			}
+			else
+			{
+				*dst++ = 'c';	// Read 4 bytes
+				*dst++ = '4';
+			}
 		}
 
 		unsigned char ch = *p++;
 
 		// Two hex chars (bytes)
+		// NB these values are redundant when reading, but still need to be sent over JTAG (as a bonus
+		// this could implement a simultaneous read/write operation with appropriate verilog support)
 		*dst++ = TOHEX(ch>>4);
 		*dst++ = TOHEX(ch);
 		*dst = 0;	// Not necessary but makes debugging easier since can see end of data when printing buffer
 
-		if (++byte > 62)
+		int packlen = mode ? 62 : 3;	// Write mode sends 63 byte packets, read is 4 bytes
+		if (++byte > packlen)
 		{
 			byte = 0;
 
-			// Always operate in packmode
-			size_t pblen = dst - packbuf;
-			if (pblen > sizeof(packbuf) - 132)	// Tweak so it just fits
+			if (mode)
 			{
-				*dst++ = 'Z';
+				// Writing
+
+				size_t pblen = dst - packbuf;
+				if (pblen > sizeof(packbuf) - 132)	// Tweak so it just fits
+				{
+					*dst++ = 'Z';
+					*dst = 0;
+
+					respond(packbuf);
+
+					dst = packbuf;
+					strcpy(dst, "WX");
+					dst += 2;
+					*dst = 0;	// Not neccessary (but eases debug)
+				}
+			}
+			else
+			{
+				// Reading
+				// Cycle through UPDATEDR/CAPTUREDR back to SHIFTDR
+				strcpy(dst, "2e2f2e2f2e2f2c2d2c2d");	// TMS 1 1 1 0 0
+				dst += 20;
 				*dst = 0;
+				rcount++;
 
-				respond(packbuf);
+				size_t pblen = dst - packbuf;
+				if (pblen > sizeof(packbuf) - 132)	// Tweak so it just fits (this is PLENTY for read)
+				{
+					// This does not get used (read exceeds max allowed) so may be buggy
 
-				dst = packbuf;
-				strcpy(dst, "WX");
-				dst += 2;
-				*dst = 0;	// Again, not necessary
+					printf("Readback full buffer ints %d bytes %d\n", rcount, rcount*4);
+					*dst++ = 'Z';
+					*dst = 0;
+
+					respond(packbuf);
+
+					char tmp[64];
+					// BEWARE server.c only allows 2 byte (4 hex char) size
+					sprintf(tmp,"RX%02x%02xZ", (rcount*4)&0xff, (rcount/64)&0xff);
+					respond(tmp);
+
+					io_check();
+					bulk_readbuf(r, rcount*4);
+					r += rcount + 4;
+
+					dst = packbuf;
+					strcpy(dst, "WX");
+					dst += 2;
+					*dst = 0;
+
+					rcount = 0;
+				}
 			}
 		}
 	}
 
-	send_residual(packbuf, dst);
+	// TODO combine
+	if (mode)
+		bulk_residual_write(packbuf, dst, mode);
+	else
+		bulk_residual_read(packbuf, dst, r, mode);
+
 	tap_reset();
+	jflush();
+}
+
+void bulk_write(char *mem, unsigned int len)
+{
+	bulk_transfer(mem, len, 1);
+}
+
+void bulk_read(char *mem, unsigned int len)
+{
+	if (len % 4)
+		DOABORT("length must be a multiple of 4");
+
+	if (len > 72 * 4)
+		DOABORT("length cannot exceed 288 bytes");	// Seems to be a FTDI limit, TODO check documentation
+
+	bulk_transfer(mem, len, 0);
 }
 
 int fpga_txrxmem(char *uparams, unsigned int chipid)
@@ -422,7 +641,7 @@ int fpga_txrxmem(char *uparams, unsigned int chipid)
 		for (int i=0; i<iter; i++)	// NOT while() since want iter below
 		{
 			vdr_ret = scan_vir_vdr(4, 32, IWADDR, 0x0, NOREADMODE);	// Set write address 0
-			bulk_upload((char*)mem, membytes);	// NB size is in bytes
+			bulk_write((char*)mem, membytes);	// NB size is in bytes
 			if (i%10 == 9)
 				printf("done %d iterations of %d\n", i+1, iter);
 		}
@@ -434,14 +653,14 @@ int fpga_txrxmem(char *uparams, unsigned int chipid)
 	else
 	{
 		printf("\nBulk upload %d bytes...\n", membytes);
-		bulk_upload((char*)mem, membytes);	// NB size is in bytes
+		bulk_write((char*)mem, membytes);	// NB size is in bytes
 		printf("... done\n\n");
 	}
 	
 	vdr_ret = scan_vir_vdr(4, 32, IRADDR, 0, NOREADMODE);	// Set read address 0
 
-	// Readback is SLOW as we're bitbanging, so just do random locations
-	printf("Testing random locations (SLOW since bitbang)\n");
+	// Readback is SLOW as we're bitbanging, so just do random locations (not so SLOW any more)
+	printf("Testing random locations...\n");	//  Not quite so SLOW any more
 
 	vdr_ret = scan_vir_vdr(4, 32, IFLAGS, FLAGS_RADDR, NOREADMODE);	// Set LEDs to read address for blinkenlights
 
@@ -450,15 +669,48 @@ int fpga_txrxmem(char *uparams, unsigned int chipid)
 	else
 		count = 64;
 
-	for (int i=0; i<=count; i++)
+	while (count > 0)
 	{
 		// sanitize addr since using as index to mem[MEMSIZE] (BEWARE MEMSIZE must be power of 2)
 		int addr = rand() & (MEMSIZE-1);
-		unsigned int n = mem[addr];
-		vdr_ret = scan_vir_vdr(4, 32, IRADDR, addr, NOREADMODE);// Set read address
-		vdr_ret = scan_vir_vdr(4, 32, IRDATA, 0, READMODE);	// Read value
-		printf("addr %04x returned %08" PRIx64 " expected %08x %s\n", addr, (int64_t)vdr_ret, n,
-				vdr_ret == n ? "MATCH" : "BAD");
+
+		int psize = 72;	// Packet size, see bulk_transfer(), counting by ints (so psize=60/4=15)
+						// NB anything above 72 returns a FTDI error, possibly a limit TODO check documentation.
+		unsigned int tmem[psize+1];	// Temp buffer to hold result
+
+		// for (int i=0; i<psize; i++)	// DEBUG init to 0
+		//	tmem[i] = 0;
+
+		if (count < psize)
+			psize = count;
+
+		// This is a bit lazy as I don't handle wrapping, instead just defer to single mode. TODO fix.
+		if (addr < MEMSIZE - 1 - psize)
+		{
+			vdr_ret = scan_vir_vdr(4, 32, IRADDR, addr, NOREADMODE);// Set read address
+			bulk_read((char*)tmem, psize * 4);
+			for (int i=0; i<psize; i++)
+			{
+				// NB this is a contiguous block of psize addresses
+				unsigned int vdr_ret = tmem[i];
+				unsigned int n = mem[addr + i];
+				// Keep int64_t / PRIx64 for consistency with the one below
+				printf("addr %04x returned %08" PRIx64 " expected %08x %s\n", addr+i, (int64_t)vdr_ret, n,
+					vdr_ret == n ? "MATCH" : "BAD");
+			}
+			count -= psize;
+		}
+		else
+		{
+			// Address near end of mem[], do singly
+			int addr = rand() & (MEMSIZE-1);
+			unsigned int n = mem[addr];
+			vdr_ret = scan_vir_vdr(4, 32, IRADDR, addr, NOREADMODE);// Set read address
+			vdr_ret = scan_vir_vdr(4, 32, IRDATA, 0, READMODE);	// Read value
+			printf("addr %04x returned %08" PRIx64 " expected %08x %s\n", addr, (int64_t)vdr_ret, n,
+					vdr_ret == n ? "MATCH" : "BAD");
+			count--;
+		}	
 	}
 
 	if (uparams && strchr(uparams, 'x'))
@@ -469,7 +721,10 @@ int fpga_txrxmem(char *uparams, unsigned int chipid)
 		printf("\nStress test, CONTROL-C to quit\n");	// TODO add signal handler and tap_reset() on quit
 
 		int coverage[MEMSIZE] = { 0 };
-		int64_t elapsed_sec = 0;
+
+		// int64_t elapsed_sec = 0;	// Now using clock_gettime() instead
+		// time_t tstart, tfinish;
+		struct timespec telapsed;
 
 		for (int iter = 1; /* empty */ ; iter++)
 		{
@@ -477,8 +732,9 @@ int fpga_txrxmem(char *uparams, unsigned int chipid)
 			// printf("Iteration %d\r", iter);	// \r not \n is deliberate
 			// fflush(stdout);
 
-			time_t tstart, tfinish;
-			time(&tstart);
+			// time(&tstart);		// Now using clock_gettime() instead
+		    struct timespec tstart, tfinish, tdelta;
+		    clock_gettime(CLOCK_MONOTONIC, &tstart);
 
 			srand(iter);	// Send different data each time
 
@@ -487,56 +743,136 @@ int fpga_txrxmem(char *uparams, unsigned int chipid)
 
 			vdr_ret = scan_vir_vdr(4, 32, IWADDR, 0, NOREADMODE);	// Set write address 0
 
-			bulk_upload((char*)mem, membytes);	// NB size is in bytes
+			bulk_write((char*)mem, membytes);	// NB size is in bytes
 			
 			vdr_ret = scan_vir_vdr(4, 32, IRADDR, 0, NOREADMODE);	// Set read address 0
 
-			count = 1024;	// Reads per iteration (checking count/MEMSIZE = 1/16 of total locations)
+			int psize = 72;	// Packet size, see bulk_transfer(), counting by ints (so psize=60/4=15)
+							// NB anything above 72 returns a FTDI error, possibly a limit TODO check documentation.
+			unsigned int tmem[psize+1];	// Temp buffer to hold result
 
-			for (int i=0; i<=count; i++)
+			int golarge = 0;	// Yeah, it's now fast enough to do it all at once (approx 4 seconds per iteration)
+								// But I'll leave it off by default as the other one looks more impressive
+
+			if (uparams && strchr(uparams, 'L'))
+				golarge = 1;	// If you really want it
+
+			// count = 1024;	// OLD - Reads per iteration (checking count/MEMSIZE = 1/16 of total locations)
+			count = (1024 / 72) * 72 + 72;	// Round it up to nearest psize should be marginally more efficient
+
+			if (golarge)
+				count = MEMSIZE;
+
+			int addr = 0;
+
+			while (count)
 			{
-				// random address (different each iteration since seed changes above)
-				int addr = rand() & (MEMSIZE-1);	// sanitize since using as index to mem[MEMSIZE]
-													// BEWARE MEMSIZE must be power of 2 (checked above via #error)
-				coverage[addr]++;
-				unsigned int n = mem[addr];
-				vdr_ret = scan_vir_vdr(4, 32, IRADDR, addr, NOREADMODE);// Set read address
-				vdr_ret = scan_vir_vdr(4, 32, IRDATA, 0, READMODE);	// Read value
-				// if (iter==3 && i==123)	// Force a failure to confirm check is working
-				//	vdr_ret++;
-				if (vdr_ret != n)
+				int nreads = psize;
+				if (count < nreads)
+					nreads = count;
+
+				if (!golarge)
 				{
-					printf("\nFAIL at addr %04x returned %08" PRIx64 " expected %08x %s\n", addr, (int64_t)vdr_ret, n,
-							vdr_ret == n ? "MATCH" : "BAD");
-					tap_reset();
-					exit(1);
+					// random address (different each iteration since seed changes above)
+					addr = rand() & (MEMSIZE-1);	// sanitize since using as index to mem[MEMSIZE]
+													// BEWARE MEMSIZE must be power of 2 (checked above via #error)
+					if (addr == 1)
+						addr = 0;	// rand() does not return 0, so cover it at 1
 				}
+
+				if (addr >= MEMSIZE)
+					DOABORT("bad address");
+
+				// This is a bit lazy as I don't handle wrapping, instead just read to end of memory. TODO fix.
+				int excess = addr + nreads - MEMSIZE;
+				if (excess > 0)
+					nreads -= excess;
+				if (nreads < 1 || addr + nreads > MEMSIZE)	// Yeah, a bit belt&braces but brain fuzz has set in
+				{
+					printf("addr %x excess %d nreads %d\n", addr, excess, nreads);
+					DOABORT("bad excess");
+				}
+
+				if (addr >= MEMSIZE)
+					DOABORT("bad address");	// Just to be absolutely sure!
+
+				vdr_ret = scan_vir_vdr(4, 32, IRADDR, addr, NOREADMODE);// Set read address
+				bulk_read((char*)tmem, nreads * 4);
+
+				for (int i=0; i<nreads; i++)
+				{
+					// NB this is a contiguous block of nreads addresses
+					unsigned int vdr_ret = tmem[i];
+					unsigned int n = mem[addr + i];
+					coverage[addr + i]++;
+
+					// if (iter==3 && i==nreads/2)	// Force a failure to confirm check is working
+					//	vdr_ret++;
+					if (vdr_ret != n)
+					{
+						printf("\nFAIL at addr %04x returned %08" PRIx64 " expected %08x %s\n", addr+i, (int64_t)vdr_ret, n,
+								vdr_ret == n ? "MATCH" : "BAD");
+						tap_reset();
+						exit(1);
+					}
+				}
+
+				count -= nreads;
+				if (golarge)
+					addr += nreads;
 			}
 
-			time(&tfinish);
-	//		if (!g_silent)
+			// time(&tfinish);
+		    clock_gettime(CLOCK_MONOTONIC, &tfinish);
+
+			// if (!g_silent)	// not appropriate as -v is way too verbose
+			// quiet ie print if no uparams (redundant since needs 'x') or no 'q'
+			if (golarge || !(uparams && strchr(uparams, 'q')))
 			{
+#if 0	// OLD time_t version
 				elapsed_sec += tfinish - tstart;
 				printf("Elapsed %" PRId64 " seconds cumulative %" PRId64 " sec", (int64_t)(tfinish - tstart), elapsed_sec);
 
 		    	printf(" FTDI read cumulative %d.%.9" PRId64 " sec\n",
 					(int)g_cumulative_read_time.tv_sec, (int64_t)g_cumulative_read_time.tv_nsec);
+#else	// NEW clock_gettime version
+   				sub_timespec(tstart, tfinish, &tdelta);
+   				add_timespec(telapsed, tdelta, &telapsed);
+			    printf("Elapsed %.2f seconds cumulative %.2f sec",
+							(int)tdelta.tv_sec + (double)tdelta.tv_nsec / (double)NS_PER_SECOND,
+							(int)telapsed.tv_sec + (double)telapsed.tv_nsec / (double)NS_PER_SECOND);
+		    	printf(" FTDI read cumulative %.2f sec\n",
+					(int)g_cumulative_read_time.tv_sec + (double)g_cumulative_read_time.tv_nsec / (double)NS_PER_SECOND);
+#endif
 			}
 
 			// if (iter == 1 || iter%10 == 0)	// uncomment for less chat
 			{
-				int count = 0;
-				for (int i=0; i<=MEMSIZE; i++)
-					if (coverage[i])
-						count++;
 				// NOTE coverage just indicates what percentage of memory locations have been read back.
 				// It is not an indication of the "fullness" of the stress test as we're testing JTAG I/O
 				// and not the integrity of the block RAM! It takes 38 iterations for 90%, 49 for 95%
-				printf("Coverage at iteration %d = %3.1f%%\n", iter, (double)((100.0*count)/MEMSIZE));
-				// continue testing				
+
+				int count = 0;
+				for (int i=0; i<MEMSIZE; i++)
+					if (coverage[i])
+						count++;
+				// if (count < MEMSIZE) || !golarge)	// No point as it's 100% with golarge anyway
+				if (count < MEMSIZE)
+					printf("Coverage at iteration %d = %3.2f%%\n", iter, (double)((100.0*count)/MEMSIZE));
+
+#if 0
+				// Find the bad'un 'cos without golarge it doesn't reach 100%
+				if (count > MEMSIZE-2)
+					for (int i=0; i<MEMSIZE; i++)
+						if (!coverage[i])
+							printf("Bad'un %x\n", i);	// It's zero! I suppose rand() don't give that one.
+#endif
 			}
 		}
 	}
+
+	printf("FTDI read cumulative %d.%.9" PRId64 " sec\n",
+		(int)g_cumulative_read_time.tv_sec, (int64_t)g_cumulative_read_time.tv_nsec);
 
 	// At exit...
 	tap_reset();
@@ -574,11 +910,13 @@ int fpga_txrxmem_timing(char *uparams, unsigned int chipid)
 	// All JTAG operations are now logged to ram
 	vdr_ret = scan_vir_vdr(4, 32, IRADDR, 0, NOREADMODE);	// Set read address 0
 
-	// TODO Add more operations here that we want to see logged eg a short bulk_upload()
+	// TODO Add more operations here that we want to see logged eg a short bulk_write()
 
 	// Readback the ram
 
-	// Best to redirect this to a file
+	// This is so very old-skool output compared to ModelSim/GtkWave, best to redirect this to a file.
+	// BEWARE the current verilog wraps memory from 0x3fff to 0x0000. TODO add a flag to optionally inhibit this.
+
 	printf("\ntime 50MHz/20nS     delta cdr sdr pdr udr tdo tdi tms tck\n");
 
 	unsigned int mem[MEMSIZE];	// Save the result in case we want to do more later
@@ -634,7 +972,8 @@ int fpga_txrxmem_timing(char *uparams, unsigned int chipid)
 	I/O since I redirected to a file. Could it be FTDI read timeout? Other than those delays, tck runs at cycle time
 	of approx 8 * 20nS = 160nS = 6MHz in bulk transfer mode, 42 * 20nS = 840nS = 1.1MHz in bitbang mode.
 
-	The long pauses are the cause of the slow read performance. TODO need to get to the bottom of this.
+	The long pauses are the cause of the slow read performance. Need to get to the bottom of this...
+	I think it's the FTDI driver buffering reads, TODO check the libftdi documentation for any tunable parmeters.
 
 	*/
 
@@ -675,8 +1014,6 @@ int usercode(char *uparams)
 	// NB need to scan 5 bits for 4 bit VIR as top bit is hub address
 	scan_dr_int(0x10 | IIDENT, 5, READMODE);	// PAUSEIR to SHIFTDR (addr=1 is MSB, hence 0x10)
 
-	clientflushrx();
-
 	respond("RX05Z");	// read 5 bytes (expect 0202020202020202, 5 zeros)
 	io_check();
 
@@ -685,7 +1022,6 @@ int usercode(char *uparams)
 	int len = 32;
 	scan_dr_int(0, len, READMODE);	// PAUSEIR to SHIFTDR
 
-	clientflushrx();
 	char str[256];
 	sprintf(str, "RX%02xZ", len);
 	respond(str);	// read bitbangs
@@ -749,8 +1085,6 @@ int usercode(char *uparams)
 		// NB need to scan 5 bits for 4 bit VIR as top bit is hub address
 		scan_dr_int(0x10 | EXTEST, 5, READMODE);	// PAUSEIR to SHIFTDR (addr=1 is MSB, hence 0x10)
 
-		clientflushrx();
-
 		respond("RX05Z");	// read 5 bytes (expect 0202020202020202, 5 zeros)
 		io_check();
 
@@ -759,7 +1093,6 @@ int usercode(char *uparams)
 		int len = 5;
 		scan_dr_int(0, len, READMODE);	// PAUSEIR to SHIFTDR
 
-		clientflushrx();
 		char str[256];
 		sprintf(str, "RX%02xZ", len);
 		respond(str);	// read bitbangs
