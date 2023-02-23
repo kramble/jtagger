@@ -1103,8 +1103,10 @@ int main (int argc, char **argv)
 #if 0	// Debug stuff
 	printf("\nJtagger exit with status %d\n", ret);
 
+#ifdef WANT_CLOCK_GETTIME
 	printf("FTDI read cumulative %d.%.9" PRId64 " seconds\n", (int)g_cumulative_read_time.tv_sec,
 				 g_cumulative_read_time.tv_nsec);
+#endif
 
 	printf("respondlen %d write ops %d bytes %d read ops %d bytes %d\n",
 					g_respond_len, g_wop, g_wbyte, g_rop, g_rbyte);

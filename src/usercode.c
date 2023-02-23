@@ -715,16 +715,21 @@ int fpga_txrxmem(char *uparams, unsigned int chipid)
 
 	if (uparams && strchr(uparams, 'x'))
 	{
+#ifdef WANT_CLOCK_GETTIME
 	    printf("FTDI read cumulative %d.%.9" PRId64 " seconds\n", (int)g_cumulative_read_time.tv_sec,
 				 (int64_t)g_cumulative_read_time.tv_nsec);
+#endif
 
 		printf("\nStress test, CONTROL-C to quit\n");	// TODO add signal handler and tap_reset() on quit
 
 		int coverage[MEMSIZE] = { 0 };
 
-		// int64_t elapsed_sec = 0;	// Now using clock_gettime() instead
-		// time_t tstart, tfinish;
+#ifdef WANT_CLOCK_GETTIME
 		struct timespec telapsed;
+#else
+		int64_t elapsed_sec = 0;
+		time_t tstart, tfinish;
+#endif
 
 		for (int iter = 1; /* empty */ ; iter++)
 		{
@@ -732,10 +737,12 @@ int fpga_txrxmem(char *uparams, unsigned int chipid)
 			// printf("Iteration %d\r", iter);	// \r not \n is deliberate
 			// fflush(stdout);
 
-			// time(&tstart);		// Now using clock_gettime() instead
+#ifdef WANT_CLOCK_GETTIME
 		    struct timespec tstart, tfinish, tdelta;
 		    clock_gettime(CLOCK_MONOTONIC, &tstart);
-
+#else
+			time(&tstart);
+#endif
 			srand(iter);	// Send different data each time
 
 			for (int i=0; i<MEMSIZE; i++)
@@ -747,7 +754,7 @@ int fpga_txrxmem(char *uparams, unsigned int chipid)
 			
 			vdr_ret = scan_vir_vdr(4, 32, IRADDR, 0, NOREADMODE);	// Set read address 0
 
-			int psize = 72;	// Packet size, see bulk_transfer(), counting by ints (so psize=60/4=15)
+			int psize = 72;	// Packet size, see bulk_transfer(), counting by ints (so psize 72 is 288 bytes)
 							// NB anything above 72 returns a FTDI error, possibly a limit TODO check documentation.
 			unsigned int tmem[psize+1];	// Temp buffer to hold result
 
@@ -813,6 +820,7 @@ int fpga_txrxmem(char *uparams, unsigned int chipid)
 						printf("\nFAIL at addr %04x returned %08" PRIx64 " expected %08x %s\n", addr+i, (int64_t)vdr_ret, n,
 								vdr_ret == n ? "MATCH" : "BAD");
 						tap_reset();
+						jflush();
 						exit(1);
 					}
 				}
@@ -822,20 +830,16 @@ int fpga_txrxmem(char *uparams, unsigned int chipid)
 					addr += nreads;
 			}
 
-			// time(&tfinish);
+#ifdef WANT_CLOCK_GETTIME
 		    clock_gettime(CLOCK_MONOTONIC, &tfinish);
-
+#else
+			time(&tfinish);
+#endif
 			// if (!g_silent)	// not appropriate as -v is way too verbose
 			// quiet ie print if no uparams (redundant since needs 'x') or no 'q'
 			if (golarge || !(uparams && strchr(uparams, 'q')))
 			{
-#if 0	// OLD time_t version
-				elapsed_sec += tfinish - tstart;
-				printf("Elapsed %" PRId64 " seconds cumulative %" PRId64 " sec", (int64_t)(tfinish - tstart), elapsed_sec);
-
-		    	printf(" FTDI read cumulative %d.%.9" PRId64 " sec\n",
-					(int)g_cumulative_read_time.tv_sec, (int64_t)g_cumulative_read_time.tv_nsec);
-#else	// NEW clock_gettime version
+#ifdef WANT_CLOCK_GETTIME
    				sub_timespec(tstart, tfinish, &tdelta);
    				add_timespec(telapsed, tdelta, &telapsed);
 			    printf("Elapsed %.2f seconds cumulative %.2f sec",
@@ -843,6 +847,9 @@ int fpga_txrxmem(char *uparams, unsigned int chipid)
 							(int)telapsed.tv_sec + (double)telapsed.tv_nsec / (double)NS_PER_SECOND);
 		    	printf(" FTDI read cumulative %.2f sec\n",
 					(int)g_cumulative_read_time.tv_sec + (double)g_cumulative_read_time.tv_nsec / (double)NS_PER_SECOND);
+#else
+				elapsed_sec += tfinish - tstart;
+				printf("Elapsed %" PRId64 " seconds cumulative %" PRId64 " sec\n", (int64_t)(tfinish - tstart), elapsed_sec);
 #endif
 			}
 
@@ -871,8 +878,10 @@ int fpga_txrxmem(char *uparams, unsigned int chipid)
 		}
 	}
 
+#ifdef WANT_CLOCK_GETTIME
 	printf("FTDI read cumulative %d.%.9" PRId64 " sec\n",
 		(int)g_cumulative_read_time.tv_sec, (int64_t)g_cumulative_read_time.tv_nsec);
+#endif
 
 	// At exit...
 	tap_reset();
@@ -978,10 +987,14 @@ int fpga_txrxmem_timing(char *uparams, unsigned int chipid)
 	*/
 
 	time(&tfinish);
-	printf("Elapsed %" PRId64 " seconds", (int64_t)(tfinish - tstart));
 
+#ifdef WANT_CLOCK_GETTIME
+	printf("Elapsed %" PRId64 " seconds", (int64_t)(tfinish - tstart));
 	printf(" FTDI read cumulative %d.%.9" PRId64 " sec\n",
 		(int)g_cumulative_read_time.tv_sec, (int64_t)g_cumulative_read_time.tv_nsec);
+#else
+	printf("Elapsed %" PRId64 " seconds\n", (int64_t)(tfinish - tstart));
+#endif
 
 	// At exit...
 	tap_reset();

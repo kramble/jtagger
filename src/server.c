@@ -369,7 +369,7 @@ static int handle_message(char *s)
 				    clock_gettime(CLOCK_MONOTONIC, &finish);
     				sub_timespec(start, finish, &delta);
     				add_timespec(g_cumulative_read_time, delta, &g_cumulative_read_time);
-					if (delta.tv_sec > 0 || delta.tv_nsec > (long)(report * NS_PER_SECOND))
+					if (delta.tv_sec > 0 || delta.tv_nsec > (long long)(report * NS_PER_SECOND))
 					    printf("FTDI read %d.%.9" PRId64 " seconds cumulative %d.%.9" PRId64 " seconds\n",
 								(int)delta.tv_sec, (int64_t)delta.tv_nsec,
 								(int)g_cumulative_read_time.tv_sec, (int64_t)g_cumulative_read_time.tv_nsec);
