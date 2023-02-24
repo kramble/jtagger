@@ -14,10 +14,10 @@ static void usage(void)
 static void help(void)
 {
 	printf(
-"Usage: jtaggaudio --help -v -p filename.svf -r filename.rbf -u params\n\n"
+"Usage: jtagaudio --help -v -p filename.svf -r filename.rbf -u params\n\n"
 "A standalone jtag driver for the DE0-Nano (Quartus is not required).\n"
-"AUDIO version, enter WAV filename for -u params eg jtaggaudio -u file.wav\n"
-"Should now also accept jtaggaudio file.wav\n"
+"AUDIO version, enter WAV filename for -u params eg jtagaudio -u file.wav\n"
+"Should now also accept jtagaudio file.wav\n"
 
 "OPTIONS\n"
 "-v sets verbose mode.\n"

@@ -2,6 +2,7 @@
 
 // The Quartus 10.1 version of cygwin is VERY old, so this may not be needed for modern cygwin
 // clock_gettime() is only needed for debug, so no great loss if cygwin does not have it
+// Also affects older MinGW, so if it's a problem just comment out the #define WANT_CLOCK_GETTIME
 #ifndef __CYGWIN__
 #define WANT_CLOCK_GETTIME
 #endif

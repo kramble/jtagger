@@ -203,8 +203,13 @@ static int parse_wave(char *buf, size_t len)
 		return -1;
 
 	printf("AudioFormat %d NumChannels %d SampleRate %d\nByteRate %d BlockAlign %d BitsPerSample %d\n",
+#ifdef __CYGWIN__
+			(int)header.AudioFormat, (int)header.NumChannels, (int)header.SampleRate,
+			(int)header.ByteRate, (int)header.BlockAlign, (int)header.BitsPerSample);
+#else
 			header.AudioFormat, header.NumChannels, header.SampleRate,
 			header.ByteRate, header.BlockAlign, header.BitsPerSample);
+#endif
 
 	if (header.AudioFormat != 1 || header.NumChannels < 1 || header.NumChannels > 2 || header.BitsPerSample != 16)
 	{
@@ -276,8 +281,6 @@ static int fpga_audio(char *uparams, unsigned int chipid)
 
 	fseek(afile, offset, SEEK_SET);
 
-	//header.SampleRate = 22050;
-
 	// int sample_duration = 1134;	// 44100 samples/sec @50MHz DE0-Nano clock
 	int sample_duration = 50000000 / header.SampleRate;	// Ought to work for non-CD rates too!
 	int playing = 0;
@@ -301,11 +304,16 @@ static int fpga_audio(char *uparams, unsigned int chipid)
 			else
 				bytes_read = fread(abuf, 1, ABUF_LEN, afile);
 
+			// printf("Read %ld %d\n", bytes_read, ABUF_LEN);
+
 			if (bytes_read < 1)
 				break;
 
 			if (header.NumChannels == 1)
+			{
 				stereoize((short*)abuf, ABUF_LEN);
+				bytes_read *= 2;
+			}
 
 			if (bytes_read < ABUF_LEN)
 				final = 6;	// Needs to be this big due to delay filling buffer
@@ -373,14 +381,15 @@ void sigterm_handler(int sig)
 	// Don't try to access JTAG from here, it does not work
 	g_quit = 1;
 
-#ifndef __MINGW32__	// I've been burned so many times by porting issues, so don't assume it will work. Will test later.
-#ifndef __CYGWIN__
-		struct sigaction sa = { 0 };
+#ifndef __MINGW32__	// MinGW does not have signals, but Cygwin does
+		// struct sigaction sa = { 0 };	// Older gcc warns about this (though it seems to work)
+		struct sigaction sa;
+		memset (&sa, 0, sizeof(sa));	// So do this instead
+
 		sa.sa_handler = SIG_DFL;
 		sigaction(SIGTERM, &sa, 0);
 		sigaction(SIGINT, &sa, 0);
 		sigaction(SIGHUP, &sa, 0);
-#endif
 #endif
 
 	printf("\nCaught signal %d, exiting\n", sig);
@@ -435,14 +444,15 @@ int usercode(char *uparams)
 		FLAGS_WDATA = FLAGS_v2_WDATA;
 		FLAGS_RDATA = FLAGS_v2_RDATA;
 
-#ifndef __MINGW32__	// I've been burned so many times by porting issues, so don't assume it will work. Will test later.
-#ifndef __CYGWIN__
-		struct sigaction sa = { 0 };
+#ifndef __MINGW32__	// MinGW does not have signals, but Cygwin does
+		// struct sigaction sa = { 0 };	// Older gcc warns about this (though it seems to work)
+		struct sigaction sa;
+		memset (&sa, 0, sizeof(sa));	// So do this instead
+
 		sa.sa_handler = sigterm_handler;	// See sigterm_handler() defined above
 		sigaction(SIGTERM, &sa, 0);
 		sigaction(SIGINT, &sa, 0);
 		sigaction(SIGHUP, &sa, 0);
-#endif
 #endif
 		fpga_audio(uparams, id);
 	}
