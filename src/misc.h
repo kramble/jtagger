@@ -35,6 +35,7 @@
 // The following is specific to jtagger.c (invalid chip ID)
 #define ERROR_BADCHIP				(-666)
 #define ERROR_IRVALIDATE			(-667)
+#define ERROR_BADBITSTREAM			(-668)
 
 // Simplified these cf openocd originals ...
 

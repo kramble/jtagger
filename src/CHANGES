@@ -72,6 +72,9 @@ just for info.
 Did not have to resort to verilog modifications, uses the normal capture/shift
 cycle. There seems to be an issue with larger transfers, so currently limited
 to 72 * 32 bit words per read, but it's still plenty fast.
+
+2023-02-23 Refactor in preparation for fpga/audio demo (fun is coming!)
+Split jtagger.c into jtaggermain.c (fpga/audio will have audiomain.c)
  
 NEWS
 Looking ahead ... 

@@ -110,6 +110,8 @@ extern int g_msqtx, g_msqrx;// tx, rx from viewpoint of current program, so clie
 
 extern int g_server_status;	// Current status see JSTA_* above
 
+extern int g_ftdi_ok;		// FTDI open succeeded
+
 extern int g_mode;			// Server control (debugging)
 
 extern int g_strictrx;		// Wait for exact sequence in rx (not used in server mode)
@@ -157,6 +159,8 @@ extern unsigned int (*device_params)[DEVICE_PARAMS_MAXINDEX+1];		// See devices.
 #define NOREADMODE 0		// scan_dr_int() read parameter
 #define READMODE 1
 
+#define MILLISECONDS 1000	// for JTAGGER_SLEEP (calls usleep)
+
 // Prototypes
 void doabort(const char *func, char *s);
 char *hexdump(uint8_t *buf, unsigned int size);
@@ -177,8 +181,9 @@ int scan_dr_int(unsigned int val, int bits, int read);
 long long unsigned scan_vir_vdr(unsigned int irlen, unsigned int vrlen, unsigned int vir, unsigned int vdr, int read);
 int print_nibble(void);
 unsigned long long get_bitbang(unsigned int len, unsigned int shift);
-void bulk_read(char *mem, unsigned int len);
-void bulk_write(char *mem, unsigned int len);
+void bulk_read(char *mem, unsigned int len, int vir);
+void bulk_write(char *mem, unsigned int len, int vir);
+int init_fpga(int *device_index);
 int program_fpga(char *fname, int filetype, int device_index, int yes);
 int serve_alone(char *msg);
 int client(void);

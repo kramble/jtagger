@@ -34,10 +34,6 @@ stuff into calls into the OpenOCD stack, or go it my own way (see scan_dr_int() 
 
 #include "common.h"
 
-#define MILLISECONDS 1000	// for JTAGGER_SLEEP (calls usleep)
-
-int ftdi_ok;
-
 // BEWARE the server process and jtagger process have INDEPENDENT versions of info (since they
 // are separate processes). So data must be copied between them at the message level.
 // NB info.drv is used ONLY by server (jtagger does not communicate directly with FTDI)
@@ -606,6 +602,313 @@ unsigned long long get_bitbang(unsigned int len, unsigned int shift)
 	return n;
 }
 
+// NOTE the bulk transfer functions may appear to belong in jtagger.c BUT they rely on user #defines IRDATA and IWDATA
+// which do NOT belong in jtagger.c so they will have to stay in uercode.c (at least until I think of a better way)
+// UPDATE added vir parameter, so now moved them to jtagger.c
+
+void bulk_readbuf(char *mem, unsigned int len)
+{
+	// Processing g_clientmsg.mtext so no point having an error return
+	// NB A length mismatch would result in an error in the server.c FTDI read, so handled there
+	// Unlike get_bitbang() len is bytes, not bits
+
+	char *p = g_clientmsg.mtext + 4;
+
+	// printf("rbuf = [%s]\n", p-4);
+
+	for (int i=0; i<len; i++)
+	{
+		// TODO make efficient
+		unsigned char b, c=0;
+		b = *p++;	// BEWARE do not use UNHEX() directly on p++ (else ++ will happen 6 times)
+		c = UNHEX(b);
+		b = *p++;
+		c = c<<4 | UNHEX(b);
+		*mem++ = c;
+	}
+}
+
+static void bulk_residual_write(char *packbuf, char *dst, int mode)
+{
+	// Based on program.c/send_residual() with addition of mode
+	int debug = 0;
+	int lastlen = 0;
+
+	if (dst > packbuf+2)	// Check for residual data (ie packbuf contains more than "WX")
+	{
+		if (debug)
+			printf("dst %p *dst=%d packbuf %p ...\n%s\n", dst, *dst, packbuf, packbuf);	// *dst should (now) be NULL
+
+		// TESTED by changing postamble in devices.c - use parameters preamble=3192, postamble=401 for max
+		// packet "bff..ffZ", then postamble=409 for rollover "81ffZ"
+
+		int numpackets = (dst - packbuf - 2) / 128;		// 128 for (header byte + 63 bytes data) * 2 for hex
+		char* last = packbuf + numpackets * 128 + 2;	// The -2 above / + 2 here allows for "WX"
+
+		if (debug)
+		{
+			lastlen = dst - last;	// DEBUG
+			printf("numpackets = %d packbuf = %p last = %p lastlen = %d\n", 
+				numpackets, packbuf, last, lastlen);
+			printf("packlen = %" PRIuPTR " lastoffset = %" PRIuPTR "\n", dst - packbuf, last - packbuf);
+		}
+
+		if (last < dst)
+		{
+			// update header for last packet
+			unsigned char header = 0x80 | ((dst - last) / 2 - 1);	// -1 allows for the header byte itself
+			if (header > 0xbf)	// max byte packet
+				DOABORT("header > 0xbf");
+			header |= mode ? 0 : 0x40;		// Set read flag
+			*last = TOHEX(header>>4);
+			*(last+1) = TOHEX(header);
+		}
+		else if (last == dst)
+		{
+			// Last packet was already complete (seen with preamble=3192, postamble=401), this is OK
+			if (debug)
+				printf("INFO last == dst\n");
+		}
+		else
+			// DOABORT("last > dst");						// This should not happen
+			printf("%s: ERROR last > dst\n", __func__);		// But don't abort (programming may succeed anyway)
+
+		// Write residual
+		*dst++ = 'Z';
+		*dst = 0;
+
+		if (debug)
+			puts(packbuf);
+
+		respond(packbuf);
+	}
+}
+
+static void bulk_residual_read(char *packbuf, char *dst, char *result, int mode)
+{
+	// Separate for now until debugged, TODO combine with write
+
+	// Based on program.c/send_residual() with addition of mode
+	int debug = 0;
+	int lastlen = 0;
+
+	int packlen = mode ? 128 : 30;	// NB read packet includes 20 byte TMS sequence hence (2 + 8 + 20)
+
+	if (dst > packbuf+2)	// Check for residual data (ie packbuf contains more than "WX")
+	{
+		if (debug)
+			printf("dst %p *dst=%d packbuf %p ...\n%s\n", dst, *dst, packbuf, packbuf);	// *dst should (now) be NULL
+
+		int numpackets = (dst - packbuf - 2) / packlen;		// 128 for (header byte + 63 bytes data) * 2 for hex
+		char* last = packbuf + numpackets * packlen + 2;	// The -2 above / + 2 here allows for "WX"
+
+		if (debug)
+		{
+			lastlen = dst - last;	// DEBUG
+			printf("numpackets = %d packbuf = %p last = %p lastlen = %d\n", 
+				numpackets, packbuf, last, lastlen);
+			printf("packlen = %" PRIuPTR " lastoffset = %" PRIuPTR "\n", dst - packbuf, last - packbuf);
+		}
+
+		if (last < dst)
+		{
+			// update header for last packet
+			int adj = mode ? 0 : 20;
+			unsigned char header = 0x80 | ((dst - last - adj) / 2 - 1);	// -1 allows for the header byte itself
+			if (header > 0xbf)	// max byte packet
+				DOABORT("header > 0xbf");
+			header |= mode ? 0 : 0x40;		// Set read flag
+			*last = TOHEX(header>>4);
+			*(last+1) = TOHEX(header);
+		}
+		else if (last == dst)
+		{
+			// Last packet was already complete
+			if (debug)
+				printf("INFO last == dst\n");
+		}
+		else
+			// DOABORT("last > dst");						// This should not happen
+			printf("%s: ERROR last > dst\n", __func__);		// But don't abort (programming may succeed anyway)
+
+		// Write residual
+		*dst++ = 'Z';
+		*dst = 0;
+
+		if (debug)
+			puts(packbuf);
+
+		respond(packbuf);
+
+		if (lastlen)
+			DOABORT("lastlen");		// Read should not have any partial packets
+
+		int rcount = numpackets;
+
+		// printf("Readback %d ints %d bytes\n", rcount, rcount*4);
+
+		char tmp[64];
+		// BEWARE server.c only allows 2 byte (4 hex char) size
+		sprintf(tmp,"RX%02x%02xZ", (rcount*4)&0xff, (rcount/64)&0xff);
+		respond(tmp);
+
+		io_check();
+		bulk_readbuf(result, rcount*4);
+
+		rcount = 0;
+	}
+}
+
+static void bulk_transfer(char *mem, unsigned int len, int mode, int vir)
+{
+	// Setup is same as scan_vir_vdr(4, 32, ...)
+
+	// int vir = mode ? IWDATA : IRDATA	// Now passed as parameter
+	int irlen = 4;
+
+	tap_reset();
+	runtest5();
+
+	IRSHIFT_USER1();
+
+	// NB need to scan 5 bits for 4 bit VIR as top bit is hub address
+	scan_dr_int(0x10 | vir, irlen+1, NOREADMODE);	// hub addr=1 is MSB, hence 0x10
+
+	IRSHIFT_USER0();	// exits in PAUSEIR
+
+	// Based on scan_dr_int(vdr, vrlen) and parse_rbf()
+	// Write scans data non-stop (does not pass through UPDATEDR, see jtag_vdr.v)
+	// Read goes though the normal capture/update loop
+
+	char packbuf[BUF_LEN];	// NB BUF_LEN is message buffer
+	*packbuf = 0;			// Set as empty
+
+    respond("WX2e2f2e2f2e2f2c2d2c2d2cZ");	// PAUSEIR to SHIFTDR
+    // TMS        1   1   1   0   0
+
+	char *dst = packbuf;
+	strcpy(dst, "WX");
+	dst += 2;
+
+	char *p = mem;
+	char *r = mem;	// FTDI read data is written here
+	int rcount = 0;
+	int byte = 0;
+	while (p < mem + len)
+	{
+		if (byte == 0)
+		{
+			// packet header
+			if (mode)
+			{
+				*dst++ = 'b';	// Write 63 bytes
+				*dst++ = 'f';
+			}
+			else
+			{
+				*dst++ = 'c';	// Read 4 bytes
+				*dst++ = '4';
+			}
+		}
+
+		unsigned char ch = *p++;
+
+		// Two hex chars (bytes)
+		// NB these values are redundant when reading, but still need to be sent over JTAG (as a bonus
+		// this could implement a simultaneous read/write operation with appropriate verilog support)
+		*dst++ = TOHEX(ch>>4);
+		*dst++ = TOHEX(ch);
+		*dst = 0;	// Not necessary but makes debugging easier since can see end of data when printing buffer
+
+		int packlen = mode ? 62 : 3;	// Write mode sends 63 byte packets, read is 4 bytes
+		if (++byte > packlen)
+		{
+			byte = 0;
+
+			if (mode)
+			{
+				// Writing
+
+				size_t pblen = dst - packbuf;
+				if (pblen > sizeof(packbuf) - 132)	// Tweak so it just fits
+				{
+					*dst++ = 'Z';
+					*dst = 0;
+
+					respond(packbuf);
+
+					dst = packbuf;
+					strcpy(dst, "WX");
+					dst += 2;
+					*dst = 0;	// Not neccessary (but eases debug)
+				}
+			}
+			else
+			{
+				// Reading
+				// Cycle through UPDATEDR/CAPTUREDR back to SHIFTDR
+				strcpy(dst, "2e2f2e2f2e2f2c2d2c2d");	// TMS 1 1 1 0 0
+				dst += 20;
+				*dst = 0;
+				rcount++;
+
+				size_t pblen = dst - packbuf;
+				if (pblen > sizeof(packbuf) - 132)	// Tweak so it just fits (this is PLENTY for read)
+				{
+					// This does not get used (read exceeds max allowed) so may be buggy
+
+					printf("Readback full buffer ints %d bytes %d\n", rcount, rcount*4);
+					*dst++ = 'Z';
+					*dst = 0;
+
+					respond(packbuf);
+
+					char tmp[64];
+					// BEWARE server.c only allows 2 byte (4 hex char) size
+					sprintf(tmp,"RX%02x%02xZ", (rcount*4)&0xff, (rcount/64)&0xff);
+					respond(tmp);
+
+					io_check();
+					bulk_readbuf(r, rcount*4);
+					r += rcount + 4;
+
+					dst = packbuf;
+					strcpy(dst, "WX");
+					dst += 2;
+					*dst = 0;
+
+					rcount = 0;
+				}
+			}
+		}
+	}
+
+	// TODO combine
+	if (mode)
+		bulk_residual_write(packbuf, dst, mode);
+	else
+		bulk_residual_read(packbuf, dst, r, mode);
+
+	tap_reset();
+	jflush();
+}
+
+void bulk_write(char *mem, unsigned int len, int vir)
+{
+	bulk_transfer(mem, len, 1, vir);
+}
+
+void bulk_read(char *mem, unsigned int len, int vir)
+{
+	if (len % 4)
+		DOABORT("length must be a multiple of 4");
+
+	if (len > 72 * 4)
+		DOABORT("length cannot exceed 288 bytes");	// Seems to be a FTDI limit, TODO check documentation
+
+	bulk_transfer(mem, len, 0, vir);
+}
+
 static int find_device(unsigned int device_id)
 {
 	for (int i=1; /* empty */; i++)	// NB first array entry is for defaults, so search from 1
@@ -630,12 +933,12 @@ static int find_device(unsigned int device_id)
 	return 0;		// NB device_index=0 explicitly means not found
 }
 
-static int init_fpga(int *device_index)
+int init_fpga(int *device_index)
 {
 	// Checks server status, opens FTDI if needed, and checks jtag functionality (queries fpga chip id)
 
 	printf("init_fpga\n");
-	ftdi_ok = 0;	// Assume NOT connected OK - BEWARE main() may attempt connection but status is checked here
+	g_ftdi_ok = 0;	// Assume NOT connected OK - BEWARE main() may attempt connection but status is checked here
 
 	if (!device_index)
 		DOABORT("device_index");
@@ -683,7 +986,7 @@ static int init_fpga(int *device_index)
 			return ERROR_BADCHIP;	// caller will retry
 	}
 
-	ftdi_ok = 1;	// Used at final exit from main() to send TAP_RESET. NB set to 0 above at entry to jtagger()
+	g_ftdi_ok = 1;	// Used at final exit from main() to send TAP_RESET. NB set to 0 above at entry to jtagger()
 
 	// Get status again (just for info)
 	respond("SZ");
@@ -769,9 +1072,9 @@ static int init_fpga(int *device_index)
 
 	if (*device_index)	// NB device_index=0 explicitly means not found
 	{
-		printf("\n===================================\n");
+//		printf("\n===================================\n");
 		printf("FPGA identity MATCH OK ... %08x\n", device_id);
-		printf("===================================\n");
+//		printf("===================================\n");
 	}
 	else
 	{
@@ -819,298 +1122,17 @@ static int init_fpga(int *device_index)
 	respond("RX04Z");	// read 4 bytes (NB bitbang, 03=one, 02=zero)
 	io_check();
 
-	printf("\n=========================\n");
 	if (strncmp(g_clientmsg.mtext+1, "KRX03020303Z", 12))	// NB LSB is on LEFT
 	{
+		printf("\n=========================\n");
 		printf("FPGA IR validate ERROR expected 1011 (KRX03020303Z) got %s\n", g_clientmsg.mtext);
 		return ERROR_IRVALIDATE;
 	}
 
 	// The validated pattern is (11) 0101010101 (msb to lsb) 0x155
 	printf("FPGA IR validate 0x155 OK\n");
-	printf("=========================\n\n");
+//	printf("=========================\n\n");
 
 	return 0;
 }
 
-static void usage(void)
-{
-	printf("Usage: jtagger --help -v -y -p filename.svf -r filename.rbf -u params\n");
-}
-
-static void help(void)
-{
-	printf(
-"Usage: jtagger --help -v -s -p filename.svf -r filename.rbf -u params\n\n"
-"A standalone jtag driver for the DE0-Nano (Quartus is not required).\n"
-"Without options, jtagger prints the chip id and checks for a virtual jtag hub.\n"
-"If a hub is found, the first instance is listed and some I/O is attempted.\n"
-"See the vjtag verilog project for details (this is just an example, the jtagger\n"
-"source should be modified to support your own system requirements).\n\n"
-
-"OPTIONS\n"
-"-v sets verbose mode.\n"
-"-s communicates with a separate jtag server (DEPRECIATED).\n"
-"-p will program a .svf file (default %s), likely BUGGY (use -r instead)\n"
-"-r will program a .rbf file (default %s), must not be compressed.\n"
-"-y autoconfirm programming\n"
-"-u pass string to usercode (additional parameters)\n"
-"NB only Altera/Intel Quartus .svf programming files are supported as the svf\n"
-"parsing is very crude, tested on Quartus 10.1 (other versions may not work).\n\n"
-
-"Jtagger was originally designed as a client/server on the presumpton of\n"
-"improved performance, however that is now deemed unneccessary. It can still be\n"
-"operated that way by starting \"jtagserver\" in a separate terminal window then\n"
-"running jtagger with the -s switch. Programming is considerably slower in this\n"
-"mode. The client/server employs SYSTEM V message queues (sorry) so use \"ipcs\"\n"
-"for troubleshooting. The message PID/lock file is %s (may need\n"
-"deleting to fix problems). It's really NOT worth bothering with client/server.\n\n"
-"Employs code from OpenOCD and OpenFPGALoader under the GPL license.\n"
-"You may find those projects more useful than jtagger which was written as a\n"
-"personal project to drive a vitual jtag hub without needing Quartus installed.\n"
-"Nevertheless, you may be pleasantly surprised at just how FAST it programs!\n"
-, PROGRAMFILE_S, PROGRAMFILE_R, SOCKFILE);
-}
-
-int main (int argc, char **argv)
-{
-	// NB g_spoofprog is for DEBUG of program_fpga() without writing FTDI output
-	// It skips init_fpga and disables respond() ... no messages are sent to server
-	g_spoofprog = 0;
-
-	if (g_spoofprog)
-	{
-		printf("==============================================================\n");
-		printf("****** SPOOFING  SPOOFING  SPOOFING  SPOOFING  SPOOFING ******\n");
-		printf("==============================================================\n");
-	}
-
-	g_strictrx = 1;		// Always use this now (non-strict is bad, keep option for debugging only)
-
-	int device_index = 0;	// Holds index into device_params[] after fpga_init(), 0 means not found (uses default)
-
-	// Process command line. TODO use getopt
-	int verbose = 0;
-	int yes = 0;
-	int filetype = FILETYPE_NONE;
-	char *fname = NULL;
-	char *uparams = NULL;
-
-	while (argc > 1)
-	{
-		if (!argv || !argv[1])
-			DOABORT ("argv");	// Should not happen
-
-		if (!strcmp(argv[1], "-h") || !strcmp(argv[1], "-?") || !strcmp(argv[1], "--help"))
-		{
-			// Print help and exit, other options are ignored (unless a prior was invalid)
-			help();
-			return 0;
-		}
-
-		if (!strcmp(argv[1], "-v"))
-		{
-			verbose = 1;
-			argc--;
-			argv++;
-			continue;
-		}
-
-		if (!strcmp(argv[1], "-s"))
-		{
-			g_standalone = 0;
-			argc--;
-			argv++;
-			continue;
-		}
-
-		if (!strcmp(argv[1], "-y"))
-		{
-			yes = 1;
-			argc--;
-			argv++;
-			continue;
-		}
-
-		if (!strncmp(argv[1], "-p", 2) || !strncmp(argv[1], "-r", 2))
-		{
-			if (filetype)
-			{
-				printf("ERROR multiple program options supplied\n");
-				usage();
-				return 1;
-			}
-
-			filetype = FILETYPE_SVF;
-			fname = PROGRAMFILE_S;
-
-			if (argv[1][1] == 'r')
-			{
-				filetype = FILETYPE_RBF;
-				fname = PROGRAMFILE_R;
-			}
-
-			if (argv[1][2])			// a character following p/v indicates a concatenated filename
-				fname = argv[1]+2;
-			else if (argc > 2)		// filename is next option
-			{
-				fname = argv[2];
-				argc--;
-				argv++;
-				// decrement again below
-			}
-			argc--;
-			argv++;
-			continue;
-		}
-
-		if (!strncmp(argv[1], "-u", 2))
-		{
-			if (argv[1][2])			// a character following u indicates concatenated parameters
-				uparams = argv[1]+2;
-			else if (argc > 2)		// params is next option
-			{
-				uparams = argv[2];
-				argc--;
-				argv++;
-				// decrement again below
-			}
-			argc--;
-			argv++;
-			continue;
-		}
-
-		printf("option(s) not recognised or invalid\n");
-		usage();
-		return 1;
-	}
-
-	if (verbose)
-		printf("verbose %d filetype %d fname [%s]\n", verbose, filetype, fname ? fname : "NULL");	// DEBUG
-
-	if (!g_standalone)
-	{
-		if (initmessage())
-			return 1;
-	}
-
-	if (filetype != FILETYPE_NONE)
-	{
-		if (!fname)
-			DOABORT ("fname");
-
-		if (!verbose)
-			g_silent = 1;		// BEWARE may be overriden in program.c/parse()
-
-		int ret = 0;
-
-		if (g_spoofprog)
-		{
-			// NB skips init since just testing the program_fpga() without writing FTDI output
-			// also disables respond() ... no messages are sent to server, but to be sure do this too
-			g_spoofprog = 0;
-			respond("MX07Z");	// Set g_mode = 0x03 (spoof actions 0x01 | spoof connected status 0x02) | 0x04 (silent)
-			g_spoofprog = 1;
-		}
-		else
-		{
-			if (!verbose)
-				respond("MX04Z");			// Set g_mode = 0x04 (silent)
-			else
-				respond("MX00Z");			// Set g_mode = 0x00 (normal) in case it was left set to debug mode
-			ret = init_fpga(&device_index);
-		}
-
-		if (!ret)
-			return (program_fpga(fname, filetype, device_index, yes));
-
-		return ret;
-	}
-
-	// NB program_fpga() does not reach here (always returns above)
-
-	if (g_spoofprog)
-	{
-		// Not generally a good idea here as only intended for testing program_fpga()
-		printf("====================================\n");
-		printf("**** WARNING g_spoofprog is set ****\n");
-		printf("This will likely hang at init_fpga()\n");
-		printf("Mode is only useful with -p or -x   \n");
-		printf("====================================\n");
-	}
-
-	if (!verbose)
-		g_silent = 1;
-
-	if (verbose)
-		respond("MX00Z");		// Set g_mode = 0x00 (normal) in case it was left set to debug mode
-	else
-		respond("MX04Z");		// Set g_mode = 0x04 (silent)
-
-	// The first run after connecting the DE0_NANO often fails, but this is taken care of in init_fpga()
-	// by ublast_initial_wipeout(). However disconnecting and reconnecting the USB cable without stopping
-	// and restarting the server can be problematic. Hence this loop attempts reconnection on errors.
-
-	int ret = 0;
-	int err = 0;
-	for (int i=0; i<2; i++)		// Retry several times (currently one retry) on ERROR_BADCHIP
-	{
-		if (err)
-		{
-			// Try closing and reopening FTDI. This is no longer necessary since fixed in the ublast_initial_wipeout()
-			// call, but no harm in keeping it. May be required in some circumstances, eg if disconnect and
-			// reconnect without stopping server (so get FTDI errors on first try, second should reconnect driver)
-			printf("Retrying close/open FTDI device\n");
-			respond("UZ");
-			if (!g_standalone)
-				JTAGGER_SLEEP(1000 * MILLISECONDS);
-			clientflushrx();
-			respond("JZ");
-			if (!g_standalone)
-				JTAGGER_SLEEP(1000 * MILLISECONDS);
-			clientflushrx();
-			// NB ftdi_ok status is updated in jtagger()
-		}
-		ret = init_fpga(&device_index);
-		if (ret)
-		{
-			printf("jtagger exit with ERROR %d\n", ret);
-			if (ret != ERROR_BADCHIP && ret != ERROR_IRVALIDATE)	// Retry by closing/reopening FTDI
-				break;	// Quit on any other errors
-			err = 1;
-		}
-		else
-		{
-			ret = usercode(uparams);
-			// printf("jtagger exit with status %d\n", ret);
-			break;	// Omit this break in order to to loop regardless of successful result
-		}
-		JTAGGER_SLEEP (2000 * MILLISECONDS);	// 2 seconds between retries
-	}
-
-	// Finish with TAP_RESET (safe since server will reject if FTDI not open, but check ftdi_ok anyway
-	// as server does complain which could be distracting)
-	if (ftdi_ok)
-	{
-		tap_reset();
-		jflush();
-	}
-
-	// Print timeout stats
-	// NB if g_flushrx_timeout > 0, then g_flushrx_maxdelay will always be 99
-	// printf("io_check timeouts %d maxdelay %d\n", g_flushrx_timeout, g_flushrx_maxdelay);
-
-#if 0	// Debug stuff
-	printf("\nJtagger exit with status %d\n", ret);
-
-#ifdef WANT_CLOCK_GETTIME
-	printf("FTDI read cumulative %d.%.9" PRId64 " seconds\n", (int)g_cumulative_read_time.tv_sec,
-				 g_cumulative_read_time.tv_nsec);
-#endif
-
-	printf("respondlen %d write ops %d bytes %d read ops %d bytes %d\n",
-					g_respond_len, g_wop, g_wbyte, g_rop, g_rbyte);
-#endif
-
-	return ret;
-}

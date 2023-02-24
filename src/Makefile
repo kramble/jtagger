@@ -13,8 +13,8 @@ USERCODE = usercode.o
 HEADERS = common.h misc.h
 COMMONOBJS = common.o devices.o server.o ublast_access_ftdi.o
 SERVEROBJS = servermain.o $(COMMONOBJS)
-JTAGGEROBJS = jtagger.o program.o $(USERCODE) $(COMMONOBJS)
-ALLOBJS = jtagger.o servermain.o program.o $(USERCODE) $(COMMONOBJS)
+JTAGGEROBJS = jtaggermain.o jtagger.o program.o $(USERCODE) $(COMMONOBJS)
+ALLOBJS = jtaggermain.o servermain.o jtagger.o program.o $(USERCODE) $(COMMONOBJS)
 
 SERVEREXE = jtagserver
 JTAGGEREXE = jtagger

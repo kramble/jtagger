@@ -10,6 +10,8 @@ int g_msqtx, g_msqrx;	// tx, rx from viewpoint of current program, so client tra
 
 int g_server_status;
 
+int g_ftdi_ok;		// FTDI open succeeded
+
 int g_mode;			// Server control (debugging)
 
 int g_strictrx;		// Wait for exact sequence in rx (not used in server mode)
