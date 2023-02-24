@@ -53,6 +53,8 @@ cd ../txrxmem
 ../../src/jtagger			(basic test)
 ../../src/jtagger -u st		(upload speed and stress test)
 
+Also a fun demo (DE0-Nano plays music) see fpga/audio/README for details
+
 $ ./jtagger --help 
 ------------------
 Usage: jtagger --help -v -y -p filename.svf -r filename.rbf

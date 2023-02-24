@@ -1,0 +1,60 @@
+fpga/audio - enough of the boring test stuff, let's have a bit of fun.
+
+This demo will stream an audio file over jtag to the DE0-Nano.
+
+Currently just supports .wav files, mp3 would be possible by integrating
+code from eg libmad https://www.underbit.com/products/mad/ however that's
+a lot of code that's not really relevant to jtag, so just .wav for now.
+Anyway it'll be more fun to get the DE0-Nano itself to decode mp3 (laters!)
+
+You can convert mp3 to wav files using ffmpeg, eg
+ffmpeg -i file.mp3 file.wav
+
+Or if you just want a quick test, you'll probably find some lying around in
+your OS, eg /usr/share/sounds or C:\Windows\Media
+
+Beware only mono or stereo S16LE wav files are supported (the most common
+format), but some of the Windows files are not, so just try another one.
+
+You'll need to connect some old-style headphones or earphones to the DE0-Nano.
+I do NOT recommend connecting to any electronic system (eg hifi, powered
+speakers etc.) due to the high level of RF noise produced by the delta-sigma
+(one-bit) DAC, even with filtering, as it may damage your system.
+
+Output is on pins 1 and 2 of the JP1 GPIO connector, ASCII ART follows...
+
+             L R      GND
+             | |       |
+        jp1  x x o o o x o o o...
+[*] [*]      o o o o o o o o o...
+ ^   ^
+blue+green          [ row of green leds ]
+power/usb led
+
+I recommend adding some filtering components, since I'm driving low impedance
+headphones I used the following circuit, but you should customise as appropriate.
+
+DE0-Nano L   ---/\/\/\/---+---- Headphone Left Channel
+                100 ohm   |
+                        ----- 470 nF (or anything vaguely similar)
+                        -----
+                          |
+DE0-Nano GND -------------+---- Headphone Ground
+
+And the same for the right channel. This gives an RC const of 100 * 470n = 47uS
+or 20kHz, so perhaps a slightly higher value resistor/capacitor would be better?
+Ideally use a sharper rolloff active filter which I'm not going to delve into
+here. Anyway the load impedance (8 ohm?) is going to wildly skew the filter
+curve, and this is getting way beyond my limited electronics knowledge so I'm
+going to stop right there. All liability for damage etc is DISCLAIMED! Do this
+at your own risk.
+
+Building/running the demo...
+
+cd fpga/audio
+make
+make cleanobj (to remove the .o file clutter)
+./jtagaudio -y -r system.rbf
+./jtagaudio -u file.wav			(old style demo, new version will have it's own command line parser)
+
+Have fun!

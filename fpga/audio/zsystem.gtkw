@@ -1,0 +1,57 @@
+[*]
+[*] GTKWave Analyzer v3.3.104 (w)1999-2020 BSI
+[*] Thu Feb 23 21:22:32 2023
+[*]
+[dumpfile] "/home/mark/misc/FPGA/quartus/txrxjtag/fpga/audio/zsystem.vcd"
+[dumpfile_mtime] "Thu Feb 23 21:19:19 2023"
+[dumpfile_size] 79809
+[savefile] "/home/mark/misc/FPGA/quartus/txrxjtag/fpga/audio/zsystem.gtkw"
+[timestart] 3162
+[size] 1234 762
+[pos] 0 0
+*-5.000000 3218 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+[treeopen] tb.
+[treeopen] tb.u.
+[treeopen] tb.u.u_jtag_top.
+[sst_width] 212
+[signals_width] 205
+[sst_expanded] 1
+[sst_vpaned_height] 201
+@28
+tb.u.u_jtag_top.tck
+@22
+tb.u.timer[31:0]
+tb.u.u_jtag_top.ir[3:0]
+tb.u.u_jtag_top.u_jtag_vdr.vdr[31:0]
+@28
+tb.u.u_jtag_top.capture_dr
+tb.u.u_jtag_top.shift_dr
+@22
+tb.u.u_jtag_top.raddr_out[31:0]
+tb.u.u_jtag_top.waddr_out[31:0]
+tb.u.u_jtag_top.wdata_out[31:0]
+tb.u.u_jtag_top.rdata_in[31:0]
+@28
+tb.u.wram_enable
+tb.u.ram_write_strobe
+tb.u.u_jtag_top.flags_enable
+@22
+tb.u.u_jtag_top.flags_out[31:0]
+tb.u.ram_wr_addr[13:0]
+tb.u.ram_wr_data[31:0]
+tb.u.audio_addr[31:0]
+tb.u.audio_duration[31:0]
+tb.u.audio_timer[31:0]
+tb.u.audio_addr[31:0]
+tb.u.ram_rd_addr_reg[13:0]
+tb.u.u_dacL.data_in[15:0]
+tb.u.u_dacR.data_in[15:0]
+@28
+tb.u.flags_audio
+@22
+tb.u.vu_leds[7:0]
+tb.u.nano_led_[7:0]
+tb.u.mono[15:0]
+tb.u.vu[15:0]
+[pattern_trace] 1
+[pattern_trace] 0
