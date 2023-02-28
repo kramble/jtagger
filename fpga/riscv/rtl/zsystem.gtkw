@@ -1,0 +1,60 @@
+[*]
+[*] GTKWave Analyzer v3.3.104 (w)1999-2020 BSI
+[*] Tue Feb 28 14:04:21 2023
+[*]
+[dumpfile] "/home/markoverflow/neorv32/neorv32-setups-main/quartus/de0-nano-test-setup/rtl/zsystem.vcd"
+[dumpfile_mtime] "Tue Feb 28 14:01:16 2023"
+[dumpfile_size] 158830
+[savefile] "/home/markoverflow/neorv32/neorv32-setups-main/quartus/de0-nano-test-setup/rtl/zsystem.gtkw"
+[timestart] 6353
+[size] 1220 764
+[pos] -1 -1
+*-6.000000 6475 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+[treeopen] tb.
+[treeopen] tb.u.
+[treeopen] tb.u.u_tx.
+[sst_width] 212
+[signals_width] 198
+[sst_expanded] 1
+[sst_vpaned_height] 206
+@28
+tb.u.clk
+@22
+tb.u.flags_d[31:0]
+@28
+tb.u.txstate[2:0]
+tb.u.tx_count[2:0]
+@22
+tb.u.jtag_tx_data[31:0]
+tb.u.txd_data[31:0]
+tb.u.raddr_out[31:0]
+tb.u.ram_rd_addr_reg[10:0]
+tb.u.ram_wr_addr_reg[10:0]
+tb.u.ram_wr_data[31:0]
+tb.u.ram_wr_data_reg[31:0]
+@28
+tb.u.ram_write_strobe
+@22
+tb.u.rdata_in[31:0]
+tb.u.rx_data[7:0]
+tb.u.wdata_out[31:0]
+tb.u.rx_addr[12:0]
+tb.u.uart_state[31:0]
+tb.u.u_rx.timer[18:0]
+tb.u.u_rx.counter[6:0]
+tb.u.u_rx.data[7:0]
+@28
+tb.u.u_rx.rx
+@29
+tb.u.u_rx.valid
+@22
+tb.u.rxd_data_reg[31:0]
+tb.u.u_tx.timer[15:0]
+tb.u.u_tx.counter[3:0]
+tb.u.u_tx.data_d[7:0]
+@28
+tb.u.u_tx.start
+tb.u.u_tx.busy
+tb.u.u_tx.tx
+[pattern_trace] 1
+[pattern_trace] 0

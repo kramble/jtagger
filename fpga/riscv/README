@@ -1,0 +1,78 @@
+This demo uses neorv32 https://github.com/stnolting/neorv32 which I selected as
+it is a very well documented RISCV cpu (though not the best in speed rankings).
+
+Building
+
+Download a release build from https://github.com/stnolting/neorv32/releases
+I used 1.8.1 here. Unzip it into jtagger/fpga/riscv and rename the directory
+or folder from neorv32-1.8.1 to neorv32 (my paths assume this location).
+
+Install the gcc toolchain from https://github.com/stnolting/riscv-gcc-prebuilt
+NB these are ubuntu-linux. I used the 64 bit version from
+https://github.com/stnolting/riscv-gcc-prebuilt/releases/tag/rv64imc-3.0.0
+which works fine on my LinuxMint 21 system. BEWARE the zip is very large at 540MB.
+
+The makefile ./neorv32/sw/common/common.mk will need editing to point to
+the correct version of gcc. The default is the 32 bit one, so i changed
+# RISCV_PREFIX ?= riscv32-unknown-elf-
+RISCV_PREFIX ?= riscv64-unknown-elf-
+
+Test it according to the instructions at
+https://stnolting.github.io/neorv32/ug/ ... "1.4 Testing the Installation"
+cd ./neorv32/sw/example/demo_blink_led
+make check
+make exe
+
+Before starting the Quartus build, modify the bootloader at ./neorv32/sw/bootloader
+to disable the automatic boot (set timeout to 0), I also disabled SPI and XIP.
+cd ./neorv32/sw/bootloader
+make USER_FLAGS+=-DUART_BAUD=19200 USER_FLAGS+=-DAUTO_BOOT_TIMEOUT=0 \
+USER_FLAGS+=-DSPI_EN=0 USER_FLAGS+=-DXIP_EN=0 clean_all bootloader
+
+Beware that changing the baud rate may not work. I initially tried 57600 which
+worked for console output, but the neorv32 uart could not recognise input. This
+could just be due to my simple UART implementation, but bear it in mind if you
+encounter problems. Also many sw/example programs #define BAUD_RATE 19200
+
+Then start the quartus build using de0-nano-test-setup.qpf
+
+Note that this was generated from neorv32-setups, see
+https://github.com/stnolting/neorv32-setups/tree/main/quartus/de0-nano-test-setup
+
+The only issue I encountered was that under Quartus 10.1 the create_project.tcl
+script failed at the first step copying of neorv32_test_setup_bootloader.vhd and
+sed the clock speed, so I commented that out and ran the command in bash instead.
+I also changed all uppercase instances NEORV32 to lowercase neorv32 to match my
+installation path (linux filenames are CASE sensitive).
+
+Once quartus has generated the .sof, convert it to .rbf. See dorbf.sh for info
+(NB that script is specific to my linuxmint system so won't be usable as-is)
+
+Build jtagger ...
+cd jtagger/fpga/riscv
+make
+make cleanobj
+The resulting executable is jtagriscv
+
+Copy your neorv32 executable, eg ./neorv32/sw/example/demo_blink_led/neorv32_exe.bin
+to jtagger/fpga/riscv and run
+jtagriscv -y -r de0-nano-test-setup.rbf
+jtagriscv
+
+You should see the boot messages and prompt
+Type 'u' and press ENTER to upload and run (NB unlike the original serial UART, ENTER
+is required to accept the command, only the first character is sent).
+
+There are some additional control options
+jtagriscv -u r		Resets the processor (and holds reset)
+jtagriscv -u b		Boots the processor (just releases reset)
+jtagriscv -u u		Upload (skips the prompt)
+
+Note that on loading the .rbf (jtagriscv -y -r de0-nano-test-setup.rbf) the processor
+is held in the reset state, so the bootloader led will not be flashing until you run
+jtagrisc to start it.
+
+UART communication is rather slow, so the next step in this project will be to tweak the
+bootloader to use DMA from the jtagger block RAM buffer and the bulk_write() function.
+That's going to need the exteral Wishbone Bus module, so will be a good opportunity to
+add the 32MB onboard SDRAM too (see https://github.com/emb4fun/neorv32-examples)
