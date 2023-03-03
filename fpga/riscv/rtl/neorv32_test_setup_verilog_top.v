@@ -122,7 +122,7 @@ module neorv32_test_setup_verilog_top (
     always @(posedge clk)
 	begin
 		// Synchronize
-		ram_rd_addr_reg <= raddr_out[10:0];
+		ram_rd_addr_reg <= flags_utxb_d ? tx_addr : raddr_out[10:0];
 		ram_wr_addr_reg <= waddr_out[10:0];
 		ram_wr_data_reg <= wdata_out;
 		flags_d <= flags_out;
@@ -150,7 +150,8 @@ module neorv32_test_setup_verilog_top (
 	wire flags_run	= flags_d[19];	// Applied to nrst, active low, so fpga starts in reset mode
 //	wire flags_urx  = flags_d[20];	// Enable rx buffer (moved, see below)
 	wire flags_utx  = flags_d[21];	// Strobe tx
-	wire flags_utxm = flags_d[22];	// Multi-byte tx mode (4 bytes per strobe_
+	wire flags_utxm = flags_d[22];	// Multi-byte tx mode (4 bytes per strobe)
+	wire flags_utxb = flags_d[23];	// Block tx mode
 
 `ifndef SIM
 	wire flags_urx = flags_d[20];	// (LAZY) Enable rx buffer (moved from above for simulation)
@@ -222,23 +223,44 @@ uart_rx #(.FREQUENCY(CLK_FREQUENCY), .BAUD(BAUDRATE)) u_rx
 
 	reg flags_utx_d = 1'b0;
 	reg flags_utxm_d = 1'b0;
+	reg flags_utxb_d = 1'b0;
+	reg tx_block_run = 1'b0;
+	reg [2:0] tx_block_next = 3'd0;	// shift reg for timing
 	reg [2:0] tx_count = 3'd0;
+	reg [10:0] tx_addr = 10'd0;
+	reg [10:0] tx_end = 10'd0;
+	wire  [`DR_LENGTH-1:0] tx_data_mux = flags_utxb ? rdata_in : jtag_tx_data;
 
     always @(posedge clk)
 	begin
 		if (rxd_valid && !rxd_valid_d)
-//			rxd_data_reg <= { rxd_data_reg[23:0], rxd_data };	// OLD version gives reversed chars in each word
 			rxd_data_reg <= { rxd_data, rxd_data_reg[31:8]  };	// FIFO positions data correctly in buffer
+
+		// BEWARE there is no interlocking, so the jtagrisc driver must ensure that only ONE of the flags_utx or
+		// flags_utxm/b strobe is applied and wait for txd_busy to clear before applying another (there is a short
+		// delay from strobe to txd_busy, but that is swamped by the jtag delay, so there is no race condition)
 
 		flags_utx_d <= flags_utx;
 		flags_utxm_d <= flags_utxm;
+		flags_utxb_d <= flags_utxb;
 
-		txd_start <= 1'b0;	// Default action is to clear start strobe
+		txd_start <= 1'b0;			// Default action is to clear start strobe
 
-		// BEWARE there is no interlocking, so the jtagrisc driver must ensure that only ONE of the flags_utx or
-		// flags_utxm strobe is applied and wait for txd_busy to clear before applying another (there is a short
-		// delay from strobe to txd_busy, but that is swamped by the jtag delay, so there is no race condition)
-		if (flags_utxm && !flags_utxm_d)
+		tx_block_next <= { tx_block_next[1:0], 1'b0 };
+
+		if (tx_addr == tx_end)
+			tx_block_run <= 1'b0;	// Overriden below when (flags_utxb && !flags_utxb_d)
+
+		if (flags_utxb && !flags_utxb_d)
+		begin
+			tx_addr <= 11'd0;
+			tx_end <= jtag_tx_data[10:0];
+			tx_block_run <= 1'b1;
+		end
+		else if (tx_count == 1 && txd_start)	// Arbitary timing (ie sometime after txd_data was latched)
+			tx_addr <= tx_addr + 11'd1;
+
+		if ((flags_utxm && !flags_utxm_d) | tx_block_next[2])
 		begin
 			// Transmit four chars on flags_utxm
 			tx_count <= 3'd4;
@@ -249,7 +271,7 @@ uart_rx #(.FREQUENCY(CLK_FREQUENCY), .BAUD(BAUDRATE)) u_rx
 			if (flags_utx && !flags_utx_d)
 			begin
 				txd_start <= 1'b1;			// Generate 1 cycle strobe on positive edge (delayed wrt jtag_tx_data)
-				txd_data <= jtag_tx_data;
+				txd_data <= tx_data_mux;
 			end
 		end
 
@@ -260,22 +282,27 @@ uart_rx #(.FREQUENCY(CLK_FREQUENCY), .BAUD(BAUDRATE)) u_rx
 				txd_start <= 1'b1;
 				tx_count <= tx_count - 3'd1;
 				if (tx_count == 4)
-					txd_data <= jtag_tx_data;
+					txd_data <= tx_data_mux;
 				else
 					txd_data <= { 8'd0, txd_data[31:8] };
 			end
 		end
+		else if (tx_block_run && tx_addr != tx_end && tx_block_next == 3'd0)
+			tx_block_next <= 3'd1;
+
 	end
 
-	wire txd_busym = txd_busy | txd_start | (tx_count != 0);	// txd_start avoids a one-cycle glitch at end of tx_count
+	wire txd_busym = txd_busy |
+					 txd_start |		// txd_start avoids a one-cycle glitch at end of tx_count
+					 (flags_utxb & (tx_addr != tx_end)) |
+					 (tx_count != 0);
 
 	assign rx_mem_data = rxd_data_reg;
 	assign rx_data = rxd_data_reg[7:0];
-	assign txstate = { flags_run, flags_utxm, txd_busym };	// txd state flags (only txd_busym is needed, but may as well
+	assign txstate = { flags_run, tx_block_run, txd_busym };	// txd state flags (only txd_busym is needed, but may as well
 															// include the others instead of just zeros, can reuse if needed)
 
 	// State is returned over jtag on IUART vir
-//	assign uart_state = { txstate[2:0], rx_addr[12:0], rxd_data_reg[15:0] };	// OLD version, see rxd_data_reg comment above
 	assign uart_state = { txstate[2:0], rx_addr[12:0], rxd_data_reg[23:16] , rxd_data_reg[31:24] };	// Newest rx char in LSB byte
 
 endmodule

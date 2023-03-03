@@ -173,9 +173,13 @@ module jtag_tap (
 //	#   10 rtdi = 0;
 //	#  100 rshift_dr = 0;
 
-	#  220 rtdi = 1;	// flags_utxm 0x00400000
+//	#  220 rtdi = 1;	// flags_utxm 0x00400000
+//	#   10 rtdi = 0;
+//	#   90 rshift_dr = 0;
+
+	#  230 rtdi = 1;	// flags_utxb 0x00800000
 	#   10 rtdi = 0;
-	#   90 rshift_dr = 0;
+	#   80 rshift_dr = 0;
 
 	#   30 rupdate_dr = 1;
 	#   10 rupdate_dr = 0;

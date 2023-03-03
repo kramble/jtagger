@@ -33,9 +33,12 @@
 // #define FLAGS_APLAY 0x00040000	// Unused (legacy from fpga/audio)
 
 #define FLAGS_RUN	0x00080000	// RESET is active low, so take high to start cpu
-#define FLAGS_URX	0x00100000	// Enable uart rx logging (renamed from FLAGS_AUDIO in fpga/txrxmem)
+#define FLAGS_URX	0x00100000	// Enable uart rx logging
 #define FLAGS_UTX   0x00200000	// Uart tx strobe
 #define FLAGS_UTXM  0x00400000	// Enable tx multi-byte mode (4 bytes sent per strobe)
+#define FLAGS_UTXB  0x00800000	// Enable tx block mode
+
+#define RESET_OFFSET 1			// see print_rx_buffer()
 
 #define MEMSIZE 2048			// FPGA block RAM 32 bit words (jtagger riscv jtag i/o buffer)
 
@@ -47,7 +50,7 @@
 
 unsigned int ubuf[MEMSIZE];				// 8kB buffer
 
-static volatile int g_quit;	// Set by signal handler to force exit
+// static volatile int g_quit;	// Set by signal handler to force exit (not currently used)
 
 static int get_hub_info(void)
 {
@@ -152,11 +155,14 @@ shown in the table below */
 
 }	// end get_hub_info()
 
-static void print_rx_buffer(void)
+static void print_rx_buffer(int reset_offset)
 {
-	unsigned long long UNUSED vdr_ret = 0;
+	unsigned long long vdr_ret;
 
 	static int offset;
+
+	if (reset_offset)
+		offset = 0;
 
 	vdr_ret = scan_vir_vdr(4, 32, IUART, 0, READMODE);
 
@@ -173,7 +179,7 @@ static void print_rx_buffer(void)
 
 	if (bytesneeded < 0)
 	{
-		printf("negative bytesneeded %d\n", bytesneeded);
+		printf("negative bytesneeded %d setting %d offset %d\n", bytesneeded, bytesneeded + MEMSIZE, offset);
 		bytesneeded += MEMSIZE;
 	}
 
@@ -192,7 +198,7 @@ static void print_rx_buffer(void)
 		unsigned int ch;
 
 		// Set read address each time as automatic increment will have left it one too high
-		vdr_ret = scan_vir_vdr(4, 32, IRADDR, rxaddr, NOREADMODE);
+		scan_vir_vdr(4, 32, IRADDR, rxaddr, NOREADMODE);
 
 		int readbytes = (count + 3) & ~3;	// Round up to 4 else bulk_read barfs		
 		bulk_read((char*)ubuf, readbytes, IRDATA);
@@ -240,24 +246,212 @@ static void print_rx_buffer(void)
 
 }	// end print_rx_buffer()
 
-static void send_char(char txchar, int delay)
+static void wait_uart(int timeout, int delay)
 {
-	unsigned long long vdr_ret = 0;
 	int ret_busy = 1;
-	while (ret_busy)	// TODO count and timeout?
+	while (ret_busy)
 	{
-		vdr_ret = scan_vir_vdr(4, 32, IUART, txchar, READMODE);	// Set txchar to uart and get uart status
-		int ret_busy = vdr_ret & 0x20000000 ? 1 : 0;
+		if (!timeout--)
+		{
+			printf("ERROR uart tx stuck busy\n");
+			exit(1);
+		}
+		unsigned long long vdr_ret = scan_vir_vdr(4, 32, IUART, 0, READMODE);
+		int ret_busy = vdr_ret & 0x20000000 ? 1 : 0;	// Wait for tx_busy to clear
 		if (!ret_busy)
 			break;
-		// printf("uart busy\n");
 		JTAGGER_SLEEP(delay * MILLISECONDS);
 	}
+	// printf("wait_uart ended at timout = %d\n", timeout);
+}
 
-	vdr_ret = scan_vir_vdr(4, 32, IFLAGS, FLAGS_URX | FLAGS_RUN, NOREADMODE);
-	vdr_ret = scan_vir_vdr(4, 32, IFLAGS, FLAGS_URX | FLAGS_RUN | FLAGS_UTX, NOREADMODE);
-	vdr_ret = scan_vir_vdr(4, 32, IFLAGS, FLAGS_URX | FLAGS_RUN, NOREADMODE);
-	jflush();
+static void send_char(char txchar, int delay)
+{
+	wait_uart(50, delay);
+
+	scan_vir_vdr(4, 32, IFLAGS, FLAGS_URX | FLAGS_RUN, NOREADMODE);
+	scan_vir_vdr(4, 32, IUART, txchar, READMODE);
+	scan_vir_vdr(4, 32, IFLAGS, FLAGS_URX | FLAGS_RUN | FLAGS_UTX, NOREADMODE);
+	scan_vir_vdr(4, 32, IFLAGS, FLAGS_URX | FLAGS_RUN, NOREADMODE);	// Could omit this for speed, but safer not to
+	// NB not flushed for speed, so take care when followed by JTAGGER_SLEEP
+}
+
+static int upload(char *uparams, char mode, int delay)
+{
+	int blockmode = 1;	// CONFIGURATION (else uses FLAGS_UTXM mode)
+
+	if (mode == 'U')	// CAPTIAL
+	{
+		printf("WARNING slow mode selected 'U', for fast mode use lowercase 'u'\n");
+		blockmode = 0;
+	}
+
+	// Check for file parameter
+	char *fname = uparams;
+	if (fname && *fname)	// BEWARE uparams could be NULL since we can be called from terminal
+	{
+		fname++; // skip 'u'
+		// Trim leading spaces (TODO trailing too), though neither are actually needed as main()
+		// trims both before calling usercode (unless filename is quoted and contains spaces)
+		while (*fname && isspace(*fname))	// isspace also checks for tabs
+			fname++;
+	}
+	if (!fname || !*fname)
+		fname = NEOEXEFILE;
+
+	printf("Uploading \"%s\"\n", fname);
+
+	FILE *ifile = fopen(fname, "rb");
+	if (!ifile)
+	{
+		printf("ERROR could not open %s\n", fname);
+		return ERROR_FAIL;
+	}
+
+	time_t tstart, tfinish;
+	time(&tstart);
+
+	send_char('u', delay);
+	jflush();	// ALWAYS flush before JTAGGER_SLEEP
+
+	JTAGGER_SLEEP(50 * MILLISECONDS);	// Allow longer for bootloader to print prompt via uart
+
+	print_rx_buffer(0);
+	printf("\n");
+
+	unsigned int chin;
+	int count = 0;
+	int bytes_read;
+	unsigned long long vdr_ret;
+
+	int busy_count = 0;	// DEBUG stuff
+	int max_nloop = 0;
+
+	scan_vir_vdr(4, 32, IFLAGS, FLAGS_RUN, NOREADMODE);	// Disable rx to avoid buffer corruption
+
+	wait_uart(50, delay);
+
+	// NB UBUF_LEN - 4 because fpga tx does not send final address (TODO could fix verlog, but this is simpler)
+	while ((bytes_read = fread(ubuf, 1, UBUF_LEN - 4, ifile)) > 0)
+	{
+		printf("bytes read = %d\n", bytes_read);
+		int bufaddr = 0;	// For residual (index into int array, not char array)
+
+		if (bytes_read < 8)
+			blockmode = 0;	// Send final data the slow way
+
+		if (blockmode)
+		{
+			int send_bytes = bytes_read & ~3;	// Round DOWN
+			scan_vir_vdr(4, 32, IWADDR, 0 , NOREADMODE);	// Set write address
+			bulk_write((char*)ubuf, send_bytes, IWDATA);
+
+			// NB fpga tx does not send final address, so use bytes_read/4 as end, hence cannot use that
+			// location for data, see fread() above
+			// printf("set end_addr %d\n", send_bytes/4 );
+			vdr_ret = scan_vir_vdr(4, 32, IUART, send_bytes/4, NOREADMODE);	// Set end_addr to uart
+
+			scan_vir_vdr(4, 32, IFLAGS, FLAGS_RUN | FLAGS_UTXB, NOREADMODE);	// Initiate
+
+			vdr_ret = scan_vir_vdr(4, 32, IUART, send_bytes/4, READMODE);	// Get uart status
+
+			// printf("uart status after bulk upload %08x\n", (unsigned int) vdr_ret);
+			if ((vdr_ret & 0x60000000) == 0x60000000)	// Want tx_block_run && tx_busy
+			{
+				printf("Bulk uploaded %d bytes, uart now processing (please wait a few seconds)...\n", send_bytes);
+				count += send_bytes;
+				wait_uart(2000, delay);	// Approx 10 seconds
+				vdr_ret = scan_vir_vdr(4, 32, IUART, 0, READMODE);	// Get uart status
+				// printf("uart status after wait %08x\n", (unsigned int) vdr_ret);
+				bytes_read -= send_bytes;
+				bufaddr = send_bytes / 4;		// For residual
+			}
+			else
+			{
+				printf("Bulk upload not supported with this bitstream (use a newer one)\n");
+				printf("Fallback to slow mode\n");
+				blockmode = 0;
+				// Fall through to !blockmode
+			}			
+			scan_vir_vdr(4, 32, IFLAGS, FLAGS_RUN, NOREADMODE);	// Remove FLAGS_UTXB (so we get positive edge for each loop)
+		}
+		
+		if (bytes_read)		// TODO can omit since while (bytes_read > 0) takes care of this
+		{
+			// printf("Residual: bytes_read %d bufaddr %d\n", bytes_read, bufaddr);	// DEBUG - don't omit "if (bytes_read)" yet!
+
+			// NB uses send_char() so FLAGS_URX is re-enabled ... TODO fix, pass in flag to send_char()
+			while (bytes_read > 0)
+			{
+				int bytes_send = bytes_read > 3 ? 4 : bytes_read;
+				bytes_read -= bytes_send; 
+				if (bytes_send == 4)
+				{
+					int ret_busy = 1;
+					int nloop = 0;
+					chin = ubuf[bufaddr++];		// NB int array, not char
+					while (ret_busy)
+					{
+						nloop++;
+						if (nloop > max_nloop)
+							max_nloop = nloop;
+						vdr_ret = scan_vir_vdr(4, 32, IUART, chin, READMODE);	// Set chin to uart and get uart status
+						int ret_busy = vdr_ret & 0x20000000 ? 1 : 0;
+						if (!ret_busy)
+							break;
+						busy_count++;
+						JTAGGER_SLEEP(delay * MILLISECONDS);
+					}
+
+					vdr_ret = scan_vir_vdr(4, 32, IFLAGS, FLAGS_URX | FLAGS_RUN | FLAGS_UTXM, NOREADMODE);
+					vdr_ret = scan_vir_vdr(4, 32, IFLAGS, FLAGS_URX | FLAGS_RUN, NOREADMODE);
+				}
+				else
+				{
+					// Not usually done since exe file is a multiple of 4 bytes, but can be forced by sending
+					// eg a plain text file (monitor the result using zdebug.bin neorv32 client executable)
+					printf("Sending residual %d\n", bytes_send);
+					chin = ubuf[bufaddr++];		// NB int array, not char
+					for (int i=0; i<bytes_send; i++)
+					{
+						send_char(chin & 0xff, delay);	// NB no jflush() for speed
+						chin >>= 8;
+					}
+				}
+				count += bytes_send;
+				if (count % 100 == 0)	// BEWARE ensure mod is divisible by 4 as count increments by 4
+					printf("%d bytes sent\n", count);
+			}
+		}
+
+	}	// end while
+
+	// Clear the buffer else we print binary garbage in print_rx_buffer()
+
+	memset(ubuf, 0, UBUF_LEN);
+		bulk_write((char*)ubuf, UBUF_LEN, IWDATA);
+
+	scan_vir_vdr(4, 32, IFLAGS, FLAGS_URX | FLAGS_RUN, NOREADMODE);	// Enable rx
+
+	send_char('e', delay);	// Execute
+	jflush();	// ALWAYS flush before JTAGGER_SLEEP
+
+	JTAGGER_SLEEP(50 * MILLISECONDS);	// Allow for bootloader to print prompt via uart
+	print_rx_buffer(RESET_OFFSET);		// Reset the buffer offset since we cleared the rx_addr via !FLAGS_URX
+
+	time(&tfinish);
+	if (blockmode)
+	{
+		printf("\nTotal bytes %d ", count);
+		printf("Elapsed time %"  PRId64 " seconds\n", (int64_t)(tfinish - tstart));
+	}
+	else
+	{
+		printf("\nTotal bytes %d busy count %d max %d ", count, busy_count, max_nloop);
+		printf("Elapsed time %"  PRId64 " seconds\n", (int64_t)(tfinish - tstart));
+	}
+
+	return 0;
 }
 
 static int fpga_riscv(char *uparams, unsigned int chipid)
@@ -265,13 +459,11 @@ static int fpga_riscv(char *uparams, unsigned int chipid)
 	tap_reset();
 	runtest5();
 
-	unsigned long long UNUSED vdr_ret = 0;
+	unsigned long long vdr_ret = 0;
 
-	// int waddr = 0;
-
-	int mode = -1;
+	int mode = -1;			// Flag for no-mode (enables interactive terminal)
 	if (uparams)
-		mode = uparams[0];	// char
+		mode = uparams[0];	// First char determines mode
 
 	// Get uart status
 	vdr_ret = scan_vir_vdr(4, 32, IUART, 0, READMODE);
@@ -288,40 +480,39 @@ static int fpga_riscv(char *uparams, unsigned int chipid)
 	if (mode == '?')	// Just wanted status as above
 		return 0;
 
-	vdr_ret = scan_vir_vdr(4, 32, IRADDR, 0, NOREADMODE);	// Set read address
-	vdr_ret = scan_vir_vdr(4, 32, IWADDR, 0, NOREADMODE);	// Set write address
+	scan_vir_vdr(4, 32, IRADDR, 0, NOREADMODE);	// Set read address
+	scan_vir_vdr(4, 32, IWADDR, 0, NOREADMODE);	// Set write address
 
-	int delay = 1;	// OLD 3mS works (1mS does NOT), NEW can use 1ms with uart_busy loop
+	int delay = 1;	// 1 millisecond, currently used in wait_uart() busy loop
 
 	if (mode == 'r')
 	{
-		vdr_ret = scan_vir_vdr(4, 32, IFLAGS, 0, NOREADMODE);	// Enter reset mode
+		scan_vir_vdr(4, 32, IFLAGS, 0, NOREADMODE);	// Enter reset mode
 		return 0;
 	}
 
 	if (mode == 'c')
 	{
 		// Clear rx buffer
-		vdr_ret = scan_vir_vdr(4, 32, IFLAGS, default_flags, NOREADMODE);	// Unset FLAGS_URX (resets rx_addr in fpga)
+		scan_vir_vdr(4, 32, IFLAGS, default_flags, NOREADMODE);	// Unset FLAGS_URX (resets rx_addr in fpga)
 
 		memset ((char*)ubuf, 0, sizeof(ubuf));
 		bulk_write((char*)ubuf, sizeof(ubuf), IWDATA);	// Address was set above
 
-		vdr_ret = scan_vir_vdr(4, 32, IFLAGS, default_flags | FLAGS_URX, NOREADMODE);	// Enable uart_rx
-		jflush();
+		scan_vir_vdr(4, 32, IFLAGS, default_flags | FLAGS_URX, NOREADMODE);	// Enable uart_rx
 		return 0;
 	}
 
 	// All other modes: Ensure reset is not asserted and enable uart rx
-	vdr_ret = scan_vir_vdr(4, 32, IFLAGS, FLAGS_URX | FLAGS_RUN, NOREADMODE);
-	jflush();
+	scan_vir_vdr(4, 32, IFLAGS, FLAGS_URX | FLAGS_RUN, NOREADMODE);
+	jflush();	// ALWAYS flush before JTAGGER_SLEEP
 
 	// Wait for bootloader to initialize (not always necessary, but we don't know
 	// the prior state, so need to do it every time)
 
 	JTAGGER_SLEEP(200 * MILLISECONDS);	// 100mS is insufficient to capture initial boot screen
 
-	print_rx_buffer();
+	print_rx_buffer(0);
 
 	if (mode == 'p')	// Just wanted print_rx_buffer()
 	{
@@ -337,8 +528,19 @@ static int fpga_riscv(char *uparams, unsigned int chipid)
 			// Originally meant for interaction with bootloader so only sent first
 			// char, but now extended for use as a general terminal interface. Note
 			// the special case for a bare 'u' which invokes upload and 'r' for reset
+			// Ideally these should be escaped, but that makes usage non-intuitive
+			// eg the bootloader prompts for 'u', so would expect that to just work
+			// and not need escaping.
 
-			char line[256] = { 0 };
+			// Using fgets() so need to press ENTER to process input (the alternative
+			// invoves setting non-canonical input which is difficult to get right
+			// especially cleanup on receipt of signal, eg control-c). This means
+			// that behavoir is DIFFERENT to that expected by bootloader, which
+			// complains about the unexpected \n character. This is worked-around
+			// in the case of u,r,h,e and ? but NOT otherwise else it breaks usage
+			// as a terminal for non-bootloader executables
+
+			char line[256];
 			fgets(line, sizeof(line), stdin);	// NB only returns on ENTER
 			char txchar = line[0];	// Just use first char with bootloader
 
@@ -351,10 +553,13 @@ static int fpga_riscv(char *uparams, unsigned int chipid)
 				break;
 			}
 
-			if (txchar == 'r' && line[1] == '\n')	// Handle as special case
+			// Handle as special case, we do not send '\n' else bootloader complains about invalid command
+			if (strchr("ehr?", txchar) && line[1] == '\n')
 			{
-				JTAGGER_SLEEP((1000) * MILLISECONDS);	// reset needs longer deleay
 				send_char(txchar, delay);
+				jflush();	// ALWAYS flush before JTAGGER_SLEEP
+				JTAGGER_SLEEP((txchar == 'r' ? 1000 : 50) * MILLISECONDS);	// reset needs longer delay
+				print_rx_buffer(0);
 				continue;
 			}
 
@@ -363,115 +568,30 @@ static int fpga_riscv(char *uparams, unsigned int chipid)
 			while ((txchar = *p++))
 				send_char(txchar, delay);
 		
+			jflush();	// ALWAYS flush before JTAGGER_SLEEP
 			JTAGGER_SLEEP((50) * MILLISECONDS);			// wait for response
-			print_rx_buffer();
+			print_rx_buffer(0);
 		}
 		// NB mode remains -1 and is handled below		
 	}
 
-	if (mode == 'u')
+	if (mode == 'u' || mode == 'U')	// NB not "else if" since falls through from terminal
 	{
-		// Check for file parameter
-		// NB there can currently be NO SPACES after the 'u' due to limited
-		// parsing in riscmain.c (TODO FIX, and trim trailing spaces)
-
-		char *fname = uparams;	// BEWARE uparams could be NULL since we can be called from terminal above
-		if (fname && *fname)
-		{
-			fname++; // skip 'u'
-			while (*fname && isspace(*fname))	// isspace also checks for tabs
-				fname++;
-		}
-		if (!fname || !*fname)
-			fname = NEOEXEFILE;
-
-		printf("Uploading \"%s\"\n", fname);
-
-		FILE *ifile = fopen(fname, "rb");
-		if (!ifile)
-		{
-			printf("ERROR could not open %s\n", fname);
-			return ERROR_FAIL;
-		}
-
-		time_t tstart, tfinish;
-		time(&tstart);
-
-		send_char('u', delay);
-
-		JTAGGER_SLEEP(50 * MILLISECONDS);	// Allow longer for bootloader to print prompt via uart
-
-		print_rx_buffer();
-		printf("\n");
-
-		unsigned int chin;
-		int count = 0;
-
-		int busy_count = 0;
-		int max_nloop = 0;
-		int bytes_read = 0;
-		while ((bytes_read = fread(&chin, 1, sizeof(chin), ifile)) > 0)
-		{
-			if (bytes_read == 4)
-			{
-				unsigned long long vdr_ret = 0;
-				int ret_busy = 1;
-				int nloop = 0;
-				while (ret_busy)
-				{
-					nloop++;
-					if (nloop > max_nloop)
-						max_nloop = nloop;
-					vdr_ret = scan_vir_vdr(4, 32, IUART, chin, READMODE);	// Set chin to uart and get uart status
-					int ret_busy = vdr_ret & 0x20000000 ? 1 : 0;
-					if (!ret_busy)
-						break;
-					// printf("uart busy\n");
-					busy_count++;
-					JTAGGER_SLEEP(delay * MILLISECONDS);
-				}
-
-				vdr_ret = scan_vir_vdr(4, 32, IFLAGS, FLAGS_URX | FLAGS_RUN | FLAGS_UTXM, NOREADMODE);
-				vdr_ret = scan_vir_vdr(4, 32, IFLAGS, FLAGS_URX | FLAGS_RUN, NOREADMODE);
-			}
-			else
-			{
-				// Not usually done since exe file is a multiple of 4 bytes
-				printf("Sending residual %d\n", bytes_read);
-				for (int i=0; i<bytes_read; i++)
-				{
-					send_char(chin & 0xff, delay);
-					chin >>= 8;
-				}
-			}
-			count += bytes_read;
-			if (count % 100 == 0)	// BEWARE ensure mod is divisible by 4 as count increments by 4
-				printf("%d bytes sent\n", count);
-		}
-		printf("Total bytes %d busy count %d max %d\n", count, busy_count, max_nloop);
-
-		JTAGGER_SLEEP(50 * MILLISECONDS);	// Allow longer for bootloader to print prompt via uart
-		print_rx_buffer();
-
-		send_char('e', delay);	// Execute
-
-		JTAGGER_SLEEP(50 * MILLISECONDS);	// Allow longer for bootloader to print prompt via uart
-		print_rx_buffer();
-
-		time(&tfinish);
-		printf("\nElapsed time %"  PRId64 " seconds\n", (int64_t)(tfinish - tstart));
+		upload(uparams, mode, delay);
 	}
 	else if (mode == 'h')
 	{
 		send_char('h', delay);
+		jflush();	// ALWAYS flush before JTAGGER_SLEEP
 		JTAGGER_SLEEP(50 * MILLISECONDS);	// Allow longer for bootloader to print prompt via uart
-		print_rx_buffer();
+		print_rx_buffer(0);
 	}
 	else if (mode == 'e')
 	{
 		send_char('e', delay);
+		jflush();	// ALWAYS flush before JTAGGER_SLEEP
 		JTAGGER_SLEEP(50 * MILLISECONDS);
-		print_rx_buffer();
+		print_rx_buffer(0);
 	}
 	else if (mode == 'q')	// quiet
 	{
@@ -496,6 +616,7 @@ static int fpga_riscv(char *uparams, unsigned int chipid)
 	return 0;
 }
 
+#if 0	// Not currently used
 void sigterm_handler(int sig)
 {
 	// Don't try to access JTAG from here, it does not work
@@ -514,6 +635,7 @@ void sigterm_handler(int sig)
 
 	printf("\nCaught signal %d, exiting\n", sig);
 }
+#endif
 
 int usercode(char *uparams)
 {

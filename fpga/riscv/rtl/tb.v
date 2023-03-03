@@ -20,7 +20,7 @@ neorv32_test_setup_verilog_top u (
 	$dumpfile("zsystem.vcd");
     $dumpvars(0, tb.u);
 
-	# 20000 $finish;
+	# 250000 $finish;
   end
 
   reg clk = 0;

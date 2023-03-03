@@ -1,6 +1,4 @@
-/* riscvmain.c
-
-TODO customise for fpga/riscv
+/* riscvmain.c customised for fpga/riscv
 
 */
 
@@ -14,9 +12,10 @@ static void usage(void)
 static void help(void)
 {
 	printf(
-"Usage: jtagriscv --help -v -p filename.svf -r filename.rbf -u params\n\n"
-"A standalone jtag driver for the DE0-Nano (Quartus is not required).\n"
-"riscv driver (-u is ignored), params: ?,b,c,e,p,q,u or none for prompt.\n"
+"Usage: jtagriscv --help -v -p filename.svf -r filename.rbf params\n\n"
+"A standalone jtag driver for the DE0-Nano (Quartus is not required)\n"
+"For neorv32 params: ?,b,c,e,p,q,r,u,U or none for prompt\n"
+"Upload a neorv32 executable via: \"jtagriscv r\" then \"jtagriscv u file\"\n"
 "\nOPTIONS\n"
 "-v sets verbose mode.\n"
 "-p will program a .svf file (default %s), likely BUGGY (use -r instead)\n"
@@ -30,6 +29,61 @@ static void help(void)
 "personal project to drive a vitual jtag hub without needing Quartus installed.\n"
 "Nevertheless, you may be pleasantly surprised at just how FAST it programs!\n"
 , PROGRAMFILE_S, PROGRAMFILE_R);
+}
+
+void append_param(char **mem, char *str, int *size)
+{
+	// NB passing mem as pointer to pointer
+	// NB size is allocated space (malloc), not used space
+	// NB appends extra space to separate strings (final one is removed in main)
+
+	if (!mem || !str || !size)	// Sanity check
+		return;
+
+	const size_t minalloc = 256;
+	size_t wantalloc;
+	if (*mem)
+	{
+		if (strlen(*mem)+strlen(str)+1 < *size)
+		{
+			strcat (*mem, str);
+			strcat (*mem, " ");
+			// printf("Appended  \"%s\"\n", *mem);
+			// printf("strlen = %ld\n", strlen(*mem));
+		}
+		else
+		{
+			wantalloc = ((strlen(*mem)+strlen(str)+2) + minalloc) & ~(minalloc-1);
+			*mem = (char*) realloc (*mem, wantalloc);
+			*size = wantalloc;
+			strcat (*mem, str);
+			strcat (*mem, " ");
+			// printf("Rellocated %lu bytes for \"%s\"\n", wantalloc, *mem);
+			// printf("strlen = %ld\n", strlen(*mem));
+		}
+	}
+	else
+	{
+		// NULL mem so do first alloc
+		wantalloc = ((strlen(str)+2) + minalloc) & ~(minalloc-1);
+		*size = wantalloc;
+		*mem = (char*) malloc (wantalloc);
+		strcpy (*mem, str);
+		strcat (*mem, " ");
+		// printf("Allocated %lu bytes for \"%s\"\n", wantalloc, *mem);
+		// printf("strlen = %ld\n", strlen(*mem));
+	}
+}
+
+void trim_spaces(char *str)
+{
+	if (!str)
+		return;
+	char *p = str;
+	while (*p)
+		p++;
+	while (p != str && p[-1] == ' ')	// trim all terminal spaces
+		*--p = 0;
 }
 
 int main (int argc, char **argv)
@@ -55,6 +109,7 @@ int main (int argc, char **argv)
 	int filetype = FILETYPE_NONE;
 	char *fname = NULL;
 	char *uparams = NULL;
+	int usize = 0;	// Allocated size of uparams, see append_param()
 
 	while (argc > 1)
 	{
@@ -127,35 +182,24 @@ int main (int argc, char **argv)
 
 		if (!strncmp(argv[1], "-u", 2))
 		{
+			// This just gets confusing (ie typing "-u file" instead of "-u u file") so convert -u to u
+			printf("WARNING -u is no longer required, assuming 'u' instead\n");
+			append_param(&uparams, "u", &usize);	// Add an 'u'
 			if (argv[1][2])			// a character following u indicates concatenated parameters
-				uparams = argv[1]+2;
-			else if (argc > 2)		// params is next option
-			{
-				uparams = argv[2];
-				argc--;
-				argv++;
-				// decrement again below
-			}
+				append_param(&uparams, argv[1]+2, &usize);
 			argc--;
 			argv++;
 			continue;
 		}
 
-		// printf("option(s) not recognised or invalid\n");
-		// usage();
-		// return 1;
-
-		// Instead just pass it as uparam ... TODO better argument processing, ie concatenate the parameters so we
-		// can have "u filename" instead of requiring "ufilename" (NB quoting also works, eg "u filname" where those
-		// are literal quotes in this case)
-
-		uparams = argv[1];
-		break;	// Pass the first parameter (see next line for alternative)
-
-		// The following passes only the final parameter, so instead break above
+		append_param(&uparams, argv[1], &usize);	// Just keep adding to uparams
 		argc--;
 		argv++;
 	}
+
+	trim_spaces(uparams);
+	printf("uparams \"%s\"\n", uparams ? uparams : "NULL");	// printf usually copes with null pointers BUT this is not
+															// guaranteed eg when gcc calls puts() for trivial strings
 
 	if (verbose)
 		printf("verbose %d filetype %d fname [%s]\n", verbose, filetype, fname ? fname : "NULL");	// DEBUG
@@ -284,5 +328,11 @@ int main (int argc, char **argv)
 					g_respond_len, g_wop, g_wbyte, g_rop, g_rbyte);
 #endif
 
+#ifdef __MINGW32__
+	if (ret)		// MSYS does not like some error codes eg ERROR_BADBITSTREAM (-668)
+		ret = 1;	// for which it complains, paraphrasing from memory, "Signal(125) core dumped"
+	// See https://unix.stackexchange.com/questions/242111/using-reserved-codes-for-exit-status-of-shell-scripts
+	// TODO consider doing this for all OS targets just to be safe (though linux & cygwin don't seem to mind)
+#endif
 	return ret;
 }
