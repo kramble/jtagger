@@ -1,0 +1,58 @@
+Jtagger interface to neorv32 with Wishbone interface to SDRAM
+
+Based on ...
+
+https://github.com/stnolting/neorv32
+
+https://github.com/emb4fun/neorv32-de0n-ref
+
+I think the sdram.vhd copied from emb4fun comes from
+https://github.com/nullobject/sdram-fpga
+
+See ../riscv/README for general details
+
+Programs that execute in SDRAM must be linked with a modified link script.
+This is best done in a SEPARATE neorv32 tree, so unzip neorv32-1.8.1.zip
+again and rename it neorv32_sdram.
+
+You will now have two identical sets of files ...
+./neorv32 - used for the quartus build and compiling internal ram programs.
+./neorv32_sdram - used to compile sdram programs.
+
+Now edit ./neorv32_sdram/sw/common/neorv32.ld as follows
+__neorv32_rom_size = DEFINED(__neorv32_rom_size) ? __neorv32_rom_size : 16M;
+__neorv32_ram_size = DEFINED(__neorv32_ram_size) ? __neorv32_ram_size : 16M;
+__neorv32_rom_base = DEFINED(__neorv32_rom_base) ? __neorv32_rom_base : 0x90000000; /* = VHDL package's "ispace_base_c" */
+__neorv32_ram_base = DEFINED(__neorv32_ram_base) ? __neorv32_ram_base : 0x91000000; /* = VHDL package's "dspace_base_c" */
+
+This allocates 16MB for the executable starting at 0x90000000 and 16MB for
+data at 0x91000000. You may also want to set a heap size (the default is 0),
+perhaps 8M, since there is now a lot of RAM to play with.
+
+Now do a "make clean_all" followed by "make exe" in one of the examples.
+NB if you change these values you must repeat the "make clean_all" else the
+resulting executable will not be viable (they generally just hang).
+
+Uploading to sdram is currently a two stage process, until I get around to
+modifying the bootloader. First compile the loadsdram program using the
+internal ram (neorv32) toolchain. Rename neorv32_exe.bin to loadsdram.bin
+
+Load the bitstream:
+./jtagriscv -y -r de0-nano.rbf
+
+Upload and execute the loader (NB you MUST have disabled auto-boot when
+compiling the bootloader else you need to be quick to start jtagger in
+terminal mode and "hit a key" within 8 seconds, else it just hangs)
+./jtagriscv r	(always best to ensure reset first)
+./jtagriscv u loadsdram.bin
+
+Upload and execute the sdram program, eg
+./jtagriscv u dhrystone.bin
+
+loadsdram also has a simple console interface, see loadsdram/main.c for
+details. Just start jtagger without any parameters for terminal mode.
+
+From which I conclude that (allowing for different clock speeds), sdram
+execution is roughly four times slower than internal ram. Cacheing would
+help, as would a better sdram controller (perhaps the one from Zet?)
+
