@@ -21,6 +21,7 @@
 #define IWADDR	2
 #define IRDATA	5
 #define IWDATA	6
+#define IDMA	11
 #define IUART	12
 #define IAUDIO	13
 #define IFLAGS	14
@@ -58,6 +59,8 @@
 unsigned int ubuf[MEMSIZE];				// 8kB buffer
 
 static volatile int g_quit;	// Set by signal handler to force exit
+
+static int g_flags_urx = FLAGS_URX;	// Sets default for send_char() ... see note there.
 
 static int get_hub_info(void)
 {
@@ -212,10 +215,12 @@ static void print_rx_buffer(int reset_offset)
 
 		int *p = (int*)ubuf;
 
-		if (count < 4)
-			count = 4;	// Else it loops forever (TODO check logic)
+		int loops = count / 4;
 
-		for (int i=0; i<count/4; i++)
+		if (loops == 0)
+			loops = 1;
+
+		for (int i=0; i<loops; i++)
 		{
 			// NB we always start on a int boundary since IRADDR is int-based
 			ch = *p++;
@@ -224,6 +229,18 @@ static void print_rx_buffer(int reset_offset)
 			int charsneeded = 4;
 			if (bytesneeded < 4)
 			{
+				// Unfortunately the rx may have updated the buffer between reading IUART and
+				// the bulk read (which results in random corruption), so check it again
+				vdr_ret = scan_vir_vdr(4, 32, IUART, 0, READMODE);
+				int newrxpos = (vdr_ret >> 16) & (UBUF_LEN-1);
+				if (rxpos != newrxpos)
+				{
+					// push back the residual, we will process them next time
+					offset -= bytesneeded;
+					fflush(stdout);
+					return;
+				}
+
 				charsneeded = bytesneeded;
 				ch >>= 8 * (4 - bytesneeded);	// Adjust final chars
 			}
@@ -274,12 +291,13 @@ static void wait_uart(int timeout, int delay)
 
 static void send_char(char txchar, int delay)
 {
-	wait_uart(50, delay);
+	// NB g_flags_urx sets default rx mode (rather hacky, should really be a parameter)
 
-	scan_vir_vdr(4, 32, IFLAGS, FLAGS_URX | FLAGS_RUN, NOREADMODE);
+	wait_uart(50, delay);
+	scan_vir_vdr(4, 32, IFLAGS, g_flags_urx | FLAGS_RUN, NOREADMODE);
 	scan_vir_vdr(4, 32, IUART, txchar, READMODE);
-	scan_vir_vdr(4, 32, IFLAGS, FLAGS_URX | FLAGS_RUN | FLAGS_UTX, NOREADMODE);
-	scan_vir_vdr(4, 32, IFLAGS, FLAGS_URX | FLAGS_RUN, NOREADMODE);	// Could omit this for speed, but safer not to
+	scan_vir_vdr(4, 32, IFLAGS, g_flags_urx | FLAGS_RUN | FLAGS_UTX, NOREADMODE);
+	scan_vir_vdr(4, 32, IFLAGS, g_flags_urx | FLAGS_RUN, NOREADMODE);	// Could omit this for speed, but safer not to
 	// NB not flushed for speed, so take care when followed by JTAGGER_SLEEP
 }
 
@@ -339,7 +357,10 @@ static int upload(char *uparams, int mode, int delay)
 
 	// Ensure sane flags (clear all TX variants so we get an initial positive edge)
 	if (blockmode)
+	{
 		scan_vir_vdr(4, 32, IFLAGS, FLAGS_RUN, NOREADMODE);	// Disable rx to avoid buffer corruption
+		g_flags_urx &= ~FLAGS_URX;	// Disable global rx mode ... HACK, used by send_char()
+	}
 	else
 		scan_vir_vdr(4, 32, IFLAGS, FLAGS_URX | FLAGS_RUN, NOREADMODE);	// May as well enable rx for feedback
 
@@ -440,12 +461,15 @@ static int upload(char *uparams, int mode, int delay)
 
 	}	// end while
 
-	// Clear the buffer else we print binary garbage in print_rx_buffer()
-
-	memset(ubuf, 0, UBUF_LEN);
+	if (blockmode)
+	{
+		// Clear the buffer else we print binary garbage in print_rx_buffer()
+		memset(ubuf, 0, UBUF_LEN);
 		bulk_write((char*)ubuf, UBUF_LEN, IWDATA);
+	}
 
 	scan_vir_vdr(4, 32, IFLAGS, FLAGS_URX | FLAGS_RUN, NOREADMODE);	// Enable rx
+	g_flags_urx |= FLAGS_URX;
 
 	send_char('e', delay);	// Execute
 	jflush();	// ALWAYS flush before JTAGGER_SLEEP
@@ -467,6 +491,150 @@ static int upload(char *uparams, int mode, int delay)
 
 	return 0;
 }
+
+static void adler_checksum (unsigned char *buf, unsigned size, unsigned int *checksum)
+{
+	// Bytewise Adler checksum - NB buf MUST be unsigned char (signed gives wrong result)
+	unsigned int a = *checksum & 0xffff;
+	unsigned int b = *checksum >> 16;
+	while (size--)
+	{
+		// a = (a + *buf++) % 65521;	// simple version (slow due to %)
+		// b = (b + a) % 65521;
+
+		a += *buf++;					// faster version (see zlib for a more complex, even faster algorithm)
+		if (a >= 65521)
+			a -= 65521;
+		b += a;
+		if (b >= 65521)
+			b -= 65521;
+	}
+	*checksum = b << 16 | a;
+}
+
+static int fastupload(char *uparams, int mode, int delay)	// needs loadsdram.bin (see ./loadsdram/main.c)
+{
+	// Check for file parameter
+
+	char *fname = uparams;
+	if (fname && *fname)	// BEWARE uparams could be NULL since we can be called from terminal
+	{
+		fname++; // skip 'f'
+		// Trim leading spaces (TODO trailing too), though neither are actually needed as main()
+		// trims both before calling usercode (unless filename is quoted and contains spaces)
+		while (*fname && isspace(*fname))	// isspace also checks for tabs
+			fname++;
+	}
+	if (!fname || !*fname)
+		fname = NEOEXEFILE;
+
+	printf("Fast uploading \"%s\"\n", fname);
+
+	FILE *ifile = fopen(fname, "rb");
+	if (!ifile)
+	{
+		printf("ERROR could not open %s\n", fname);
+		return ERROR_FAIL;
+	}
+
+	time_t tstart, tfinish;
+	time(&tstart);
+
+	if (!(mode & UPLOAD_UALREADY))
+		send_char('f', delay);		// Tell loadsdram we want to upload
+
+	jflush();	// ALWAYS flush before JTAGGER_SLEEP
+	JTAGGER_SLEEP(50 * MILLISECONDS);	// Allow longer for bootloader to print prompt via uart
+
+	print_rx_buffer(0);
+	printf("\n");
+
+	// Toggle FLAGS_URX to reset buffer since we use the top part here, but want to retain rx for
+	// debugging. NB rx no longer has priority in verilog, so safe to let it write provided it does
+	// not overflow the lower half of the buffer.
+	scan_vir_vdr(4, 32, IFLAGS, FLAGS_RUN, NOREADMODE);
+	scan_vir_vdr(4, 32, IFLAGS, FLAGS_URX | FLAGS_RUN, NOREADMODE);
+
+	const char client[] = "loadsdram";
+
+	unsigned long long vdr_ret;
+	int cmd = 1;	// Ready to send
+	int seq = 1;
+	int cmdsend = cmd << 28 | (seq++ & 0xf) << 24;
+	int resp = 2 << 28 | (seq++ & 0xf) << 24;
+
+	int timeout_max = 100;
+	int timeout = timeout_max;
+	while (--timeout)
+	{
+		vdr_ret = scan_vir_vdr(4, 32, IDMA, cmdsend, READMODE);
+		if ((vdr_ret & 0xff000000) == resp)
+			break;
+	}
+
+	if ((vdr_ret & 0xff000000) == resp)
+		printf("INFO %s responded %08x after %d cycles\n", client, (int)vdr_ret, timeout_max - timeout);
+	else
+	{
+		printf("ERROR %s responded %08x but expected %08x after %d cycles\n",
+					client, (int)vdr_ret, resp, timeout_max - timeout);
+		return 1;
+	}
+
+	unsigned int buf_usage = UBUF_LEN / 2;	// Only use top half of buffer (bottom is rx) TODO tweak,
+											// could adjust split for better performance.
+	unsigned int buf_offset = UBUF_LEN - buf_usage;
+	unsigned int bytes_read;
+	unsigned int byte_count = 0;
+	unsigned int checksum = 1;	// Init to 1 is a requirement for Adler checksum
+
+	while ((bytes_read = fread((char*)ubuf, 1, buf_usage, ifile)) > 0)
+	{
+		// printf("bytes read = %d\n", bytes_read);
+		byte_count += bytes_read;
+		adler_checksum ((unsigned char*)ubuf, bytes_read, &checksum);
+
+		int send_bytes = (bytes_read + 3) & ~3;	// Round UP (safe as max is buf_usage which should be divisible by 4)
+
+		scan_vir_vdr(4, 32, IWADDR, buf_offset / 4 , NOREADMODE);	// Set write address (NB int offset hence / 4)
+		bulk_write((char*)ubuf, send_bytes, IWDATA);
+
+		cmd = 3;	// Sent data
+		cmdsend = cmd << 28 | (seq++ & 0xf) << 24 | bytes_read;
+		resp = 4 << 28 | (seq++ & 0xf) << 24;
+		timeout = timeout_max;
+		while (--timeout)
+		{
+			vdr_ret = scan_vir_vdr(4, 32, IDMA, cmdsend, READMODE);
+			if ((vdr_ret & 0xff000000) == resp)
+				break;
+		}
+
+		if (timeout < 1)
+		{
+			printf("ERROR %s responded %08x but expected %08x\n", client, (int)vdr_ret, resp);
+			return 1;
+		}
+	}
+
+	cmd = 5;	// Finished
+	cmdsend = cmd << 28 | (seq++ & 0xf) << 24 | (checksum & 0x00ffffff);
+	// resp = 6 << 28 | (seq++ & 0xf) << 24;		// Not checked
+	vdr_ret = scan_vir_vdr(4, 32, IDMA, cmdsend, READMODE);
+
+	time(&tfinish);
+	printf("\nTotal bytes %d Adler checksum %08x ", byte_count, checksum);
+	printf("elapsed time %"  PRId64 " seconds\n", (int64_t)(tfinish - tstart));
+
+	send_char('e', delay);	// Execute
+	jflush();	// ALWAYS flush before JTAGGER_SLEEP
+
+	JTAGGER_SLEEP(200 * MILLISECONDS);	// Allow for loadsdram to print via uart
+	print_rx_buffer(RESET_OFFSET);		// Reset the buffer offset since we cleared the rx_addr via !FLAGS_URX
+
+	return 0;
+}
+
 
 #ifndef __MINGW32__
 static int stdin_avail()
@@ -740,6 +908,89 @@ static int fpga_riscv(char *uparams, unsigned int chipid)
 		vdr_ret = scan_vir_vdr(4, 32, IFLAGS, FLAGS_RUN, NOREADMODE);
 		return 0;	// skip the default below
 	}
+	else if (mode == 'f')	// fast upload to sdram
+	{
+		fastupload(uparams, mode, delay);
+	}
+
+	// DEBUG functions...
+	else if (mode == 'C')	// DMA control
+	{
+		unsigned int val = 0x55aa9966;
+		vdr_ret = scan_vir_vdr(4, 32, IDMA, val, READMODE);
+		printf("DMA control wrote %08x read %08" PRIx64 "\n", val, (int64_t) vdr_ret);
+	}
+	else if (mode == 'd')	// DMA data (memory check)
+	{
+		scan_vir_vdr(4, 32, IFLAGS, FLAGS_RUN, NOREADMODE);		// Disable uart rx
+		g_flags_urx &= ~FLAGS_URX;	// Disable global rx mode ... HACK, used by send_char()
+
+		printf("Memory before 'd' test...\n");
+		scan_vir_vdr(4, 32, IRADDR, 0, NOREADMODE);	// Read from start of ram
+		int readbytes = 72 * 4;	// max
+		bulk_read((char*)ubuf, readbytes, IRDATA);
+		for (int i=0; i<readbytes/4; i++)
+			printf("%08x = %08x\n", i*4, ubuf[i]);
+
+		send_char('d', delay);	// Tell loadsdram to do DMA test
+
+		printf("Memory after 'd' test...\n");
+
+		vdr_ret = scan_vir_vdr(4, 32, IUART, 0, READMODE);
+		printf("uart_status %08" PRIx64 "\n", (uint64_t)vdr_ret);	// Check if read buffering is sync'd...
+																	// it seems to fix it (WHY?)
+
+		scan_vir_vdr(4, 32, IRADDR, 0, NOREADMODE);	// Read from start of ram
+		vdr_ret = scan_vir_vdr(4, 32, IRDATA, 0, READMODE);
+		printf("non-bulk read %08x = %08x\n", 0, (int)vdr_ret);	// Check if bulk_read() is broken
+
+		scan_vir_vdr(4, 32, IRADDR, 0, NOREADMODE);	// Read from start of ram
+		vdr_ret = scan_vir_vdr(4, 32, IRDATA, 0, READMODE);
+		printf("non-bulk read %08x = %08x\n", 0, (int)vdr_ret);	// AGAIN since it's weird ... possibly we're out
+																// of sync and there is buffered read data
+
+		scan_vir_vdr(4, 32, IRADDR, 0, NOREADMODE);	// Read from start of ram
+		readbytes = 72 * 4;	// max
+		bulk_read((char*)ubuf, readbytes, IRDATA);
+		for (int i=0; i<readbytes/4; i++)
+			printf("%08x = %08x\n", i*4, ubuf[i]);	// Weird, get 00000000 for address 0, either it does not get
+													// written, or we're not reading the correct first address
+													// Possibly readbytes() is broken? Tested above. AHA, it was
+													// broken verilog, fixed now.
+
+		// NB the following allows loadsdram rx writes to continue, which they do (with some truncation at the
+		// start) since it takes time for the neorv32_uart0_printf() calls to execute (since 19200 baud)
+		vdr_ret = scan_vir_vdr(4, 32, IFLAGS, FLAGS_URX | FLAGS_RUN, NOREADMODE);		// Enable uart rx
+		g_flags_urx |= FLAGS_URX;
+		return 0;	// Instead exit leaving the buffer unchanged
+
+	}
+	else if (mode == 'x')	// Examine memory buffer
+	{
+		vdr_ret = scan_vir_vdr(4, 32, IFLAGS, FLAGS_RUN, NOREADMODE);		// Disable uart rx
+
+		// send_char('d', delay);	// Tell loadsdram to do DMA test
+
+		int readbytes = 72 * 4;	// max
+		int offset = 0;
+		int nonzero = 0;
+		int loops = 0;
+		while (offset < 8192 - 256)
+		{
+			scan_vir_vdr(4, 32, IRADDR, offset/4, NOREADMODE);
+			loops++;
+			bulk_read((char*)ubuf, readbytes, IRDATA);
+			for (int i=0; i<readbytes/4; i++)
+			{
+				printf("%08x = %08x\n", offset + i*4, ubuf[i]);
+				if (ubuf[i])
+					nonzero++;
+			}
+			offset += readbytes;
+		}
+		printf("loops %d nonzero = %d\n", loops, nonzero);
+	}
+
 	else if (mode == 'b' || mode == -1)
 	{
 		// Just take default action, so fall through

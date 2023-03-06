@@ -2,7 +2,7 @@
 
 module tb;
 
-neorv32_test_setup_verilog_top u (
+de0_nano u (
 
 	.clk_i			(clk),
 	.rstn_i			(rstn),

@@ -3,11 +3,13 @@
 module jtag_top (
     input   wire [`DR_LENGTH-1:0] rdata_in,
     input   wire [`DR_LENGTH-1:0] uart_state,
+    input   wire [`DR_LENGTH-1:0] dma_in,
     output  wire [`DR_LENGTH-1:0] wdata_out,
     output  wire [`DR_LENGTH-1:0] raddr_out,
     output  wire [`DR_LENGTH-1:0] waddr_out,
     output  wire [`DR_LENGTH-1:0] flags_out,
     output  wire [`DR_LENGTH-1:0] jtag_tx_out,
+    output  wire [`DR_LENGTH-1:0] dma_out,
     output  wire [7:0] tapsigs_out,
 	output	wire wram_enable
 );
@@ -50,12 +52,13 @@ module jtag_top (
 	wire rdata_enable = (ir == `IRDATA);
 	wire wdata_enable = (ir == `IWDATA);
 	wire flags_enable = (ir == `IFLAGS);
+	wire dma_enable = (ir == `IDMA);
 	// wire audio_enable = (ir == `IAUDIO);
 	wire uart_enable = (ir == `IUART);
 
 	// ug_virtualjtag.pdf states BYPASS must be the default for unused IR opcodes
 	wire bypass_enable = !(ident_enable | raddr_enable | waddr_enable | rdata_enable | wdata_enable |
-								flags_enable | uart_enable);
+								flags_enable | uart_enable | dma_enable);
 
     assign tdo2tap = bypass_enable ? bypass_tdo : vdr_tdo;
 
@@ -79,14 +82,17 @@ module jtag_top (
 		.flags_enable	(flags_enable),
 		.uart_enable	(uart_enable),
 		.wram_enable	(wram_enable),
+		.dma_enable		(dma_enable),
 
 		.uart_state		(uart_state),
+		.dma_in			(dma_in),
 		.rdata_in		(rdata_in),
 		.wdata_out		(wdata_out),
 		.raddr_out		(raddr_out),
 		.waddr_out		(waddr_out),
 		.flags_out		(flags_out),
-		.jtag_tx_out	(jtag_tx_out)
+		.jtag_tx_out	(jtag_tx_out),
+		.dma_out			(dma_out)
     );
 
 endmodule

@@ -19,15 +19,18 @@ module jtag_vdr
 		input				wdata_enable,
 		input				flags_enable,
 		input				uart_enable,
-		output reg			wram_enable,
+		input				dma_enable,
+		output				wram_enable,
 
         input [`DR_LENGTH-1:0]  	rdata_in,
         input [`DR_LENGTH-1:0]  	uart_state,
+        input [`DR_LENGTH-1:0]  	dma_in,
         output reg [`DR_LENGTH-1:0]	wdata_out = 0,	// BEWARE quartus 10.1 ignores port initialization values
         output     [`DR_LENGTH-1:0]	raddr_out,
         output reg [`DR_LENGTH-1:0]	waddr_out = 0,
         output     [`DR_LENGTH-1:0]	flags_out,
-        output     [`DR_LENGTH-1:0]	jtag_tx_out
+        output     [`DR_LENGTH-1:0]	jtag_tx_out,
+        output     [`DR_LENGTH-1:0]	dma_out
     );
 
 	reg [`DR_LENGTH-1:0] raddr_reg = 0;		// It seems Quartus 10.1 ignores the initial value for port registers
@@ -38,6 +41,12 @@ module jtag_vdr
 
 	reg [`DR_LENGTH-1:0] jtag_tx_reg = 0;
 	assign jtag_tx_out = jtag_tx_reg;
+
+	reg [`DR_LENGTH-1:0] dma_reg = 0;
+	assign dma_out = dma_reg;
+
+	reg	wram_enable_reg = 0;
+	assign wram_enable = wram_enable_reg;
 
     assign vdr_tdo = vdr[0];
 
@@ -84,6 +93,12 @@ module jtag_vdr
         if (update_dr && uart_enable)
             jtag_tx_reg <= vdr[`DR_LENGTH-1:0];
 
+        if (capture_dr & dma_enable)
+            vdr       <= dma_in;
+
+        if (update_dr && dma_enable)
+            dma_reg <= vdr[`DR_LENGTH-1:0];
+
         if (update_dr && waddr_enable)
 		begin
             waddr_out <= vdr[`DR_LENGTH-1:0];
@@ -107,7 +122,7 @@ module jtag_vdr
 		end			
 
 		// Ram write strobe is timed off tck to ensure correct relationship with address/data
-		wram_enable <= wdata_enable_d[4] & !wdata_enable_d[5];
+		wram_enable_reg <= wdata_enable_d[4] & !wdata_enable_d[5];
 
 		// Auto increment address. This delays the strobes until after read/write has occurred
 		// in system.v NB these are named "data" since they occur on IRDATA and IRDATA instructions,

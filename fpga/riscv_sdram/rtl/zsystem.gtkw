@@ -1,17 +1,16 @@
 [*]
 [*] GTKWave Analyzer v3.3.104 (w)1999-2020 BSI
-[*] Thu Mar  2 13:31:53 2023
+[*] Mon Mar  6 14:30:10 2023
 [*]
-[dumpfile] "/home/mark/misc/FPGA/quartus/txrxjtag/fpga/riscv/rtl/zsystem.vcd"
-[dumpfile_mtime] "Thu Mar  2 13:30:06 2023"
-[dumpfile_size] 1406805
-[savefile] "/home/mark/misc/FPGA/quartus/txrxjtag/fpga/riscv/rtl/zsystem.gtkw"
-[timestart] 198531
+[dumpfile] "/home/mark/misc/FPGA/quartus/txrxjtag/fpga/riscv_sdram/rtl/zsystem.vcd"
+[dumpfile_mtime] "Mon Mar  6 14:21:24 2023"
+[dumpfile_size] 2008861
+[savefile] "/home/mark/misc/FPGA/quartus/txrxjtag/fpga/riscv_sdram/rtl/zsystem.gtkw"
+[timestart] 1703
 [size] 1220 764
 [pos] -1 -1
-*-6.000000 193407 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+*-6.000000 1825 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
 [treeopen] tb.
-[treeopen] tb.u.
 [treeopen] tb.u.u_tx.
 [sst_width] 212
 [signals_width] 198
@@ -35,19 +34,19 @@ tb.u.tx_count[2:0]
 tb.u.jtag_tx_data[31:0]
 @28
 tb.u.u_tx.start
-@29
 tb.u.u_tx.busy
 @22
 tb.u.raddr_out[31:0]
 tb.u.ram_rd_addr_reg[10:0]
 tb.u.ram_wr_addr_reg[10:0]
 tb.u.ram_wr_data[31:0]
-tb.u.ram_wr_data_reg[31:0]
 @28
 tb.u.ram_write_strobe
+tb.u.jtag_wr_strobe
+@29
+tb.u.wram_enable_d[2:0]
 @22
 tb.u.rdata_in[31:0]
-tb.u.rx_data[7:0]
 tb.u.rx_addr[12:0]
 tb.u.uart_state[31:0]
 tb.u.u_rx.timer[18:0]
@@ -62,5 +61,20 @@ tb.u.u_tx.counter[3:0]
 tb.u.u_tx.data_d[7:0]
 @28
 tb.u.u_tx.tx
+@22
+tb.u.wbs2_adr_i[15:0]
+tb.u.wbs_dat_i[31:0]
+@28
+tb.u.wbs2_stb_i
+tb.u.wbs_we_i
+@22
+tb.u.dma_in_reg[31:0]
+tb.u.dma_out[31:0]
+@28
+tb.u.wbs2_ack_o
+tb.u.cpu_dma_sel
+tb.u.cpu_ram_sel
+tb.u.cpu_rd_enable
+tb.u.cpu_wr_enable
 [pattern_trace] 1
 [pattern_trace] 0

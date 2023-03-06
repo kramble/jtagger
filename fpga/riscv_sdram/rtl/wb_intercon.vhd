@@ -67,7 +67,13 @@ entity wb_intercon is
       wbs1_stb_o : out std_logic;
       wbs1_ack_i : in  std_logic := '0';
       wbs1_adr_o : out std_logic_vector(27 downto 0);  
-      wbs1_dat_i : in  std_logic_vector(31 downto 0) := (others => '0')
+      wbs1_dat_i : in  std_logic_vector(31 downto 0) := (others => '0');
+
+      -- Wishbone Slave 2
+      wbs2_stb_o : out std_logic;
+      wbs2_ack_i : in  std_logic := '0';
+      wbs2_adr_o : out std_logic_vector(15 downto 0);  
+      wbs2_dat_i : in  std_logic_vector(31 downto 0) := (others => '0')
    );
 end entity wb_intercon;
 
@@ -91,6 +97,7 @@ architecture syn of wb_intercon is
    --------------------------------------------------------
 
    signal wbs1_enable : std_logic := '0';
+   signal wbs2_enable : std_logic := '0';
    
 begin
    
@@ -102,6 +109,10 @@ begin
    
    wbs1_adr_o  <= wbm_adr_i(27 downto 0);
 
+   -- wbs2_enable is valid in the range from 0xFFFE0000 to 0xFFFFEFFFF
+   wbs2_enable <= '1' when (wbm_adr_i(31 downto 16) = x"fffe") else '0';
+   
+   wbs2_adr_o  <= wbm_adr_i(15 downto 0);
    --
    -- Master to Slave signals
    --
@@ -114,12 +125,16 @@ begin
    -- Slave 1
    wbs1_stb_o <= wbs1_enable and wbm_stb_i;
 
+   -- Slave 2
+   wbs2_stb_o <= wbs2_enable and wbm_stb_i;
+
    --
    -- Slave to Master signals
    --
-   wbm_ack_o <= wbs1_ack_i;
+   wbm_ack_o <= wbs1_ack_i when (wbs1_enable = '1') else wbs2_ack_i when (wbs2_enable = '1') else '0';
    
-   wbm_dat_o <= wbs1_dat_i when (wbs1_enable = '1') else (others => '0');
+   wbm_dat_o <= wbs1_dat_i when (wbs1_enable = '1') else
+                wbs2_dat_i when (wbs2_enable = '1') else (others => '0');
 
 end architecture syn;
 

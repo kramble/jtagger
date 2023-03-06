@@ -42,7 +42,7 @@ LICENSED copyright notice for code samples ...
 
 module de0_nano (
 	// -- Global control --
-	input	clk_i,		// 50MHz clock (TODO add pll)
+	input	clk_i,		// 50MHz clock
 	input	rstn_i,		// Button, active low (KEY0 the right-hand one)
 
 	// -- GPIO --
@@ -87,25 +87,24 @@ module de0_nano (
 	wire		wb_err_i;	// transfer error
 
 	// Wishbone control
-/*
-	wire [3:0]	wb_sel_int;		// byte enable
-	wire [31:0]	wb_adr_int;		// address
-	wire [31:0]	wb_dat_read;
-	wire [31:0]	wb_dat_write_int;
-*/
-	// Wishbone sdram
 	wire		wbs_we_i;
 	wire [31:0]	wbs_dat_i;
 	wire [3:0]	wbs_sel_i;
+
+	// Wishbone sdram
 	wire		wbs1_stb_i;
 	wire		wbs1_ack_o;
 	wire [27:0]	wbs1_adr_i;
 	wire [31:0]	wbs1_dat_o;
 
+	// Wishbone jtagger
+	wire		wbs2_stb_i;
+	wire		wbs2_ack_o;
+	wire [15:0]	wbs2_adr_i;
+	wire [31:0]	wbs2_dat_o;
+
 	wire [1:0]	sdram_ba;
 	wire [1:0]	sdram_dqm;
-
-	wire [7:0]	tapsigs_unused;
 
 `ifndef SIM
 	localparam CLK_FREQUENCY = 100_000_000;
@@ -156,15 +155,22 @@ module de0_nano (
 		.wbm_dat_o		(wb_dat_i),
 		.wbm_sel_i		(wb_sel_o),
 
-		// Wishbone sdram
+		// Wishbone control
 		.wbs_we_o		(wbs_we_i),
 		.wbs_dat_o		(wbs_dat_i),
 		.wbs_sel_o		(wbs_sel_i),
 
+		// Wishbone sdram
 		.wbs1_stb_o		(wbs1_stb_i),
 		.wbs1_ack_i		(wbs1_ack_o),
 		.wbs1_adr_o		(wbs1_adr_i),
-		.wbs1_dat_i		(wbs1_dat_o) 
+		.wbs1_dat_i		(wbs1_dat_o),
+
+		// Wishbone jtagger
+		.wbs2_stb_o		(wbs2_stb_i),
+		.wbs2_ack_i		(wbs2_ack_o),
+		.wbs2_adr_o		(wbs2_adr_i),
+		.wbs2_dat_i		(wbs2_dat_o)
 	);
 
 		// Wishbone SDRAM Controller
@@ -210,6 +216,43 @@ module de0_nano (
 	assign pll_locked = 1'b1;
 	assign reset_n = rstn_i & flags_run & pll_locked;
 
+	// Wishbone stimulus 
+
+	reg [31:0]	wbs_dat_i_reg	= 0;
+	reg [15:0]	wbs2_adr_i_reg	= 0;
+	reg [3:0]	wbs_sel_i_reg	= 4'b1111;
+	reg			wbs_we_i_reg	= 0;
+	reg			wbs2_stb_i_reg	= 0;
+
+	assign wbs_dat_i	= wbs_dat_i_reg;
+	assign wbs2_adr_i	= wbs2_adr_i_reg;
+	assign wbs_sel_i	= wbs_sel_i_reg;
+	assign wbs_we_i		= wbs_we_i_reg;
+	assign wbs2_stb_i	= wbs2_stb_i_reg;
+
+	initial begin
+	#6		// sync to clk
+
+	// write to DMA control reg
+	#100	wbs2_adr_i_reg = 'h2000;	// DMA reg
+			wbs_dat_i_reg = 'hdd44aacc;
+			wbs2_stb_i_reg = 1;
+			wbs_we_i_reg = 1;
+
+	#10		wbs2_stb_i_reg = 0;
+			wbs_we_i_reg = 0;
+
+	// write to RAM
+	#100	wbs2_adr_i_reg = 'h0002;	// Will see this in uart tx later
+			wbs_dat_i_reg = 'haa559966;
+			wbs2_stb_i_reg = 1;
+			wbs_we_i_reg = 1;
+
+	#10		wbs2_stb_i_reg = 0;
+			wbs_we_i_reg = 0;
+	end
+
+	// uart rx stimulus 
 	reg r  = 1'b1;
 	assign cpu_uart0_txd_o = r;
 
@@ -233,12 +276,14 @@ module de0_nano (
     jtag_top u_jtag_top
     (
 		.uart_state		(uart_state),
+		.dma_in			(dma_in_reg),
 		.rdata_in		(rdata_in),
 		.wdata_out		(wdata_out),
 		.raddr_out		(raddr_out),
 		.waddr_out		(waddr_out),
 		.flags_out		(flags_out),
 		.jtag_tx_out	(jtag_tx_data),
+		.dma_out		(dma_out),
 		.tapsigs_out	(tapsigs_unused),
 		.wram_enable	(wram_enable)
     );
@@ -247,18 +292,16 @@ module de0_nano (
 	assign gpio_o = nano_led;
 
 	// Dual port ram
-	reg [31:0] ram[0:2047];			// 8kB currently used to log rx_data, inits to 0 on fpga (not simulation though)
-									// TODO attach to wishbone so neorv32 cpu can access it (mux for simultaneous use
-									// so can use it to transfer data)
+	reg [31:0] ram[0:2047];			// 8kB currently, initializes to 0 on fpga (not simulation though)
 	reg [10:0] ram_rd_addr_reg = 0;
 	reg [10:0] ram_wr_addr_reg = 0;
 	reg [31:0] ram_wr_data_reg = 0;
 
 	// Shift register adjusts timing of ram write strobe (delayed slightly wrt addr/data ensures properly syncd)
 `define WE_LEN 3
-	reg [`WE_LEN-1:0] wram_enable_d = 0;
-
-	assign rdata_in = ram[ram_rd_addr_reg];
+	reg [`WE_LEN-1:0] wram_enable_d = `WE_LEN'd0;
+	reg jtag_wr_stalled = 0;
+	reg wbs2_stb_i_d = 0;
 
 	wire [`DR_LENGTH-1:0] uart_state;
 	wire [`DR_LENGTH-1:0] jtag_tx_data;
@@ -268,37 +311,90 @@ module de0_nano (
 	wire [`DR_LENGTH-1:0] raddr_out;
 	wire [`DR_LENGTH-1:0] waddr_out;
 	wire [`DR_LENGTH-1:0] flags_out;
+	wire [`DR_LENGTH-1:0] dma_out;
+	wire [7:0]			  tapsigs_unused;
+	wire				  wram_enable;
+
+	reg  [`DR_LENGTH-1:0] dma_in_reg = 0;	// DMA control register. NB read/write are independent registers, so
+											// cpu reads ONLY what jtagger wrote and vice versa.
 	reg  [`DR_LENGTH-1:0] flags_d = 0;
 
-	wire ram_write_strobe = flags_urx ?	wram_enable_rxd
-										:	wram_enable_d[`WE_LEN-2] & !wram_enable_d[`WE_LEN-1];
+	wire cpu_ram_sel = !wbs2_adr_i[13];
+	wire cpu_dma_sel = wbs2_adr_i[13];
+	wire cpu_rd_enable = cpu_ram_sel & wbs2_stb_i & !wbs_we_i;
+	wire cpu_wr_enable = cpu_ram_sel & wbs2_stb_i & wbs_we_i;
 
-	wire [10:0] ram_wr_addr = flags_urx	?	rx_addr[12:2]
-										:	ram_wr_addr_reg;
+	wire cpu_wr_strobe = cpu_wr_enable_d[1] & !cpu_wr_enable_d[0];
+	wire jtag_wr_strobe = wram_enable_d[`WE_LEN-2] & !wram_enable_d[`WE_LEN-1];
 
-	wire [31:0] ram_wr_data = flags_urx	?	rx_mem_data
-										:	ram_wr_data_reg;
+	reg [1:0] cpu_wr_enable_d = 0;
 
-	wire wram_enable;
+	// RAM read: cpu_rd_enable (byte selection is ignored) has priority, then jtagger
+	// OPTIONAL delay jtagger read in case of collision, but for now handle this via
+	// transfer protocol instead
+	assign rdata_in = ram[ram_rd_addr_reg];	// See ram_rd_addr_reg below for select logic. NB the address MUST be a
+											// register else Quartus will duplicate the ram for each mux input source.
+	assign wbs2_dat_o = cpu_dma_sel ? dma_out : rdata_in;
+
+	// RAM write: flags_urx has priority, then cpu_wr_enable (byte selection is ignored), then jtagger
+	// OPTIONAL delay jtagger write in case of collision, but for now handle this via
+	// transfer protocol instead
+
+	// CHANGED priority setting flags_urx LAST (with no retry).
+	// wire ram_write_strobe = flags_urx	?	wram_enable_rxd
+	//										:	cpu_wr_strobe | jtag_wr_strobe | jtag_wr_stalled;
+	// wire [10:0] ram_wr_addr = flags_urx	?	rx_addr[12:2] : ram_wr_addr_reg;
+	// wire [31:0] ram_wr_data = flags_urx	?	rx_mem_data : ram_wr_data_reg;
+
+	wire ram_write_strobe = cpu_wr_strobe | jtag_wr_strobe | jtag_wr_stalled | wram_enable_rxd_d;
+	wire [10:0] ram_wr_addr = ram_wr_addr_reg;
+	wire [31:0] ram_wr_data = ram_wr_data_reg;
+
+	assign wbs2_ack_o = wbs2_stb_i_d;	// Automatic since has priority. NB failure due to flags_urx is silently
+										// ignored, OPTIONAL raise wb_err_i in this case.
 
     always @(posedge clk)
 	begin
 		// Synchronize
-		reset_n_d <= reset_n;
+		reset_n_d <= reset_n;	// TODO like neorv32-de0n-ref perhaps (only really needed for rstn_i button
+								// KEY0 as flags_run is already sync'd to clk, unsure about pll_locked though)
 
-		ram_rd_addr_reg <= flags_utxb_d ? tx_addr : raddr_out[10:0];
-		ram_wr_addr_reg <= waddr_out[10:0];
-		ram_wr_data_reg <= wdata_out;
+		// RAM read select logic (see priority note above).
+		ram_rd_addr_reg <= cpu_rd_enable ? wbs2_adr_i[12:2]
+										: flags_utxb_d	? tx_addr
+														: raddr_out[10:0];
+
+		// CHANGED priority setting flags_urx LAST (with no retry).
+		// ram_wr_addr_reg <= cpu_wr_enable_d[0] ? wbs2_adr_i[12:2] : waddr_out[10:0];
+		// ram_wr_data_reg <= cpu_wr_enable_d[0] ? wbs_dat_i : wdata_out;
+		ram_wr_addr_reg <= cpu_wr_enable_d[0] ? wbs2_adr_i[12:2] : wram_enable_d[`WE_LEN-3] ? waddr_out[10:0] : rx_addr[12:2];
+		ram_wr_data_reg <= cpu_wr_enable_d[0] ? wbs_dat_i : wram_enable_d[`WE_LEN-3] ? wdata_out : rx_mem_data;
+
 		flags_d <= flags_out;
 
 		// Shift register synchronizes and retimes write strobe
 		wram_enable_d <= { wram_enable_d[`WE_LEN-2:0], wram_enable };
+		
+		// Defer jtag write on cpu priority write
+		jtag_wr_stalled <=	cpu_wr_strobe &	(jtag_wr_strobe | jtag_wr_stalled);
 
 		// Write to ram
 		if (ram_write_strobe)
 		begin
 			ram[ram_wr_addr] <= ram_wr_data;
 		end
+
+		// Delay the wishbone write (since there is plenty of slack between wishbone operations)
+		cpu_wr_enable_d <= { cpu_wr_enable_d[0], cpu_wr_enable };
+
+		wbs2_stb_i_d <= wbs2_stb_i & !wbs2_stb_i_d;	// Acknowledge wishbone strobe delayed by one clock
+													// DMA control writes immediately, but memory write is delayed
+													// Everything *should* be timed OK (crosses fingers)
+
+		// DMA control register
+		if (cpu_dma_sel & wbs2_stb_i & wbs_we_i)
+			dma_in_reg <= wbs_dat_i;
+
     end
 
 	// wire flags_debug = flags_d[10:8] == 1;	// Not currently used
@@ -320,42 +416,17 @@ module de0_nano (
 `ifndef SIM
 	wire flags_urx = flags_d[20];	// (LAZY) Enable rx buffer (moved from above for simulation)
 `else
-	wire flags_urx = 1'b1;
+	wire flags_urx = 1'b1;			// (LAZY) Set appropriately for simulation
 `endif
 
 	wire [7:0] nano_led;
 	assign nano_led = cpu_gpio_o;
 
 	reg [12:0] rx_addr = 0;		// NB LSB 2 bits count chars in ram word
-	wire [7:0] rx_data;
 	wire [2:0] txstate;			// Flags returned over jtag
-	reg [7:0] rx_data_d = 0;
-	reg addr_increment = 0;
 	reg wram_enable_rxd = 0;
+	reg wram_enable_rxd_d = 0;
 	reg rxd_valid_d = 0;
-
-    always @(posedge clk)
-	begin
-		rx_data_d <= rx_data;
-		rxd_valid_d <= rxd_valid;
-
-		if (flags_urx && rxd_valid && !rxd_valid_d)
-		begin
-			wram_enable_rxd <= 1;
-			rx_data_d <= rx_data_d;
-			addr_increment <= 1;
-		end
-		else
-		begin
-			wram_enable_rxd <= 0;
-			addr_increment <= 0;
-		end
-
-		if (!flags_urx)
-			rx_addr <= 0;
-		else if (addr_increment)
-			rx_addr <= rx_addr + 13'd1;
-	end
 
 	wire txd, txd_busy;
 	reg [`DR_LENGTH-1:0] txd_data = 0;
@@ -368,7 +439,7 @@ module de0_nano (
 	assign rxd = cpu_uart0_txd_o;
 	assign cpu_uart0_rxd_i = txd;
 
-uart_tx #(.FREQUENCY(CLK_FREQUENCY), .BAUD(BAUDRATE)) u_tx
+	uart_tx #(.FREQUENCY(CLK_FREQUENCY), .BAUD(BAUDRATE)) u_tx
 	(
 		.clk	(clk),
 		.start	(txd_start),
@@ -377,7 +448,7 @@ uart_tx #(.FREQUENCY(CLK_FREQUENCY), .BAUD(BAUDRATE)) u_tx
 		.busy	(txd_busy)
 	);
 
-uart_rx #(.FREQUENCY(CLK_FREQUENCY), .BAUD(BAUDRATE)) u_rx
+	uart_rx #(.FREQUENCY(CLK_FREQUENCY), .BAUD(BAUDRATE)) u_rx
 	(
 		.clk	(clk),
 		.rx		(rxd),
@@ -397,6 +468,19 @@ uart_rx #(.FREQUENCY(CLK_FREQUENCY), .BAUD(BAUDRATE)) u_rx
 
     always @(posedge clk)
 	begin
+		rxd_valid_d <= rxd_valid;
+		wram_enable_rxd_d <= wram_enable_rxd;
+
+		if (flags_urx && rxd_valid && !rxd_valid_d)
+			wram_enable_rxd <= 1;
+		else
+			wram_enable_rxd <= 0;
+
+		if (!flags_urx)
+			rx_addr <= 0;
+		else if (wram_enable_rxd_d)
+			rx_addr <= rx_addr + 13'd1;
+
 		if (rxd_valid && !rxd_valid_d)
 			rxd_data_reg <= { rxd_data, rxd_data_reg[31:8]  };	// FIFO positions data correctly in buffer
 
@@ -462,7 +546,6 @@ uart_rx #(.FREQUENCY(CLK_FREQUENCY), .BAUD(BAUDRATE)) u_rx
 					 (tx_count != 0);
 
 	assign rx_mem_data = rxd_data_reg;
-	assign rx_data = rxd_data_reg[7:0];
 	assign txstate = { flags_run, tx_block_run, txd_busym };	// txd state flags (only txd_busym is needed, but may as well
 															// include the others instead of just zeros, can reuse if needed)
 

@@ -24,6 +24,7 @@
 `define IWADDR    4'b0010
 `define IRDATA    4'b0101
 `define IWDATA    4'b0110
+`define IDMA      4'b1011
 `define IUART     4'b1100
 `define IAUDIO    4'b1101
 `define IFLAGS    4'b1110
