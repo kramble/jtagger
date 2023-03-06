@@ -212,10 +212,12 @@ static void print_rx_buffer(int reset_offset)
 
 		int *p = (int*)ubuf;
 
-		if (count < 4)
-			count = 4;	// Else it loops forever (TODO check logic)
+		int loops = count / 4;
 
-		for (int i=0; i<count/4; i++)
+		if (loops == 0)
+			loops = 1;
+
+		for (int i=0; i<loops; i++)
 		{
 			// NB we always start on a int boundary since IRADDR is int-based
 			ch = *p++;
@@ -224,6 +226,18 @@ static void print_rx_buffer(int reset_offset)
 			int charsneeded = 4;
 			if (bytesneeded < 4)
 			{
+				// Unfortunately the rx may have updated the buffer between reading IUART and
+				// the bulk read (which results in random corruption), so check it again
+				vdr_ret = scan_vir_vdr(4, 32, IUART, 0, READMODE);
+				int newrxpos = (vdr_ret >> 16) & (UBUF_LEN-1);
+				if (rxpos != newrxpos)
+				{
+					// push back the residual, we will process them next time
+					offset -= bytesneeded;
+					fflush(stdout);
+					return;
+				}
+
 				charsneeded = bytesneeded;
 				ch >>= 8 * (4 - bytesneeded);	// Adjust final chars
 			}
