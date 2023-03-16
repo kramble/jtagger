@@ -1,0 +1,46 @@
+MP3 player for neorv32 with jtagger requires libmad from https://www.underbit.com/products/mad/
+Tested with libmad-0.15.1b
+
+Download libmad-0.15.1b.tar.gz and unpack into fpga/riscv_sdram/libmad-0.15.1b
+NB files should be at fpga/riscv_sdram/libmad-0.15.1b/*, not fpga/riscv_sdram/libmad-0.15.1b/libmad-0.15.1b/*
+
+DELETE minimad.c and imdct_l_arm.S as they will interfere with compilation.
+
+Do NOT run the configure script (all of that stuff can be deleted or just ignored as we're using our own makefile here)
+
+Instead copy the files (makefile, mad.ld, mad_neorv32.c) from here to that directory/folder, then
+make clean_all exe
+
+Expect a few warnings from layer3.c ... fastsdct accessing 72 bytes in a region of size 68
+This is OK as gcc does not realise that fastsdct interleaves, and is NOT actually accessing memory outside the
+valid region. This can be disabled by uncommenting a line in makefile, vis USER_FLAGS+=-Wno-stringop-overflow
+
+NOTE that this uses a custom local linker script (mad.ld) so sw/common/neorv32.ld is ignored. This custom script
+sets the memory region location and sizes, plus some section tweaks to place commonly accessed data tables
+in the internal IMEM region for speed of access (this makes a huge difference to speed), plus the program stack.
+
+Copy the resulting neorv32_exe.bin to ../sdram_mad.bin (just run put.sh)
+
+Build the mp3.qpf project. This differs from the original deo-nano.qsf in that it adds the audio DAC plus
+buffer, cacheing and modifies the clock to 125MHz as the default 100MHz is not quite fast enough. Note that
+timing constraints are NOT met (setup is broken on the slow models), so we're flying a bit close to the wind
+here and it may not work on all devices. The alternative is to retain the 100MHz clock and use more aggressive
+optimisation of the libmad code, which is a project for another day (in extremis the synth() function could be
+split off into a second neorv32 core, with multiplexed master access to the sdram)
+
+There is a new bootloader which will load directly into sdram (this is complied into the Quartus project), or
+alternatively just use the loadsdram intermediate.
+
+Usage is simply
+./jtagger -y -r mp3.rbf
+./jtagger f sdram_mad.bin
+./jtagger f your.mp3		this is your mp3 file of up to 31MB (multiple tracks can just be cat'd into a single file)
+
+Playback starts almost immediately while the mp3 data continues to upload over the next few minutes. Once upload
+is complete the player stats can be monitored by starting a jtagger terminal session (./jtagger without parameters)
+Playback currently loops (and if a separate de0-nano power supply is used, the USB cable can be disconnected).
+Uploading new data requires a reset (./jtagger r) then re-upload ./jtagger f sdram_mad.bin followed by the mp3 data.
+Changing the code to support this without resetting will need tweaking of the libmad code (or use of the lower level
+API), so that's for another day too.
+
+
